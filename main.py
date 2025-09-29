@@ -129,8 +129,26 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str]:
 
     try:
         response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=15) 
-        response.raise_for_status() 
         
+        # --- ENHANCED ERROR LOGGING HERE ---
+        if response.status_code != 200:
+            print(f"OPENROUTER ERROR: Status Code {response.status_code}")
+            try:
+                # Log specific error message from OpenRouter body if available
+                error_data = response.json()
+                print(f"API Error Details: {error_data.get('error', 'No error details provided')}")
+                
+                # Check for common authentication failure (401 or 403)
+                if response.status_code in (401, 403):
+                    return "ERROR: Authentication failed. Please check the OPENROUTER_API_KEY.", "Unknown"
+                
+            except json.JSONDecodeError:
+                print("API returned non-JSON error response.")
+            
+            # For any other non-200 status (e.g., 500, 429 Rate Limit)
+            return "Sorry, the AI service is currently unavailable or busy. Please try again.", "Unknown"
+        # --- END ENHANCED ERROR LOGGING ---
+
         raw_content = response.json()["choices"][0]["message"]["content"]
         
         try:
@@ -151,7 +169,8 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str]:
             return "I apologize, I'm having trouble processing your query.", "Unknown"
         
     except requests.exceptions.RequestException as e:
-        print(f"OpenRouter API Error: {e}")
+        # This catches actual network failures (DNS, timeout, connection lost)
+        print(f"OpenRouter Network/Timeout Error: {e}")
         return "I am experiencing connectivity issues right now. Please try again later.", "Unknown"
     except Exception as e:
         print(f"General Error in query_openrouter: {e}")
