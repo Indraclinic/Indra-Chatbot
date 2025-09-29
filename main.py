@@ -144,7 +144,7 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=15) 
+            response = requests.post("[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)", headers=headers, json=data, timeout=15) 
             
             # Successful response
             if response.status_code == 200:
@@ -154,13 +154,6 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
                     # --- JSON ROBUSTNESS IMPROVEMENT ---
                     cleaned_content = raw_content.strip()
                     
-                    # FIX: Corrected the unterminated string literal here:
+                    # FIX: Corrected the slice operation on line 157 (and 159 in your log)
                     if cleaned_content.startswith("```json"):
                          cleaned_content = cleaned_content[len("
-http://googleusercontent.com/immersive_entry_chip/0
-
-I have corrected this line in the Canvas below. Once you redeploy this file, your Worker should start successfully and resume polling without this startup error.
-
-
-http://googleusercontent.com/immersive_entry_chip/1
-http://googleusercontent.com/immersive_entry_chip/2
