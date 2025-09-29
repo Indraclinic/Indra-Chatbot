@@ -3,8 +3,6 @@ import os
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-print("Bot Token Detected:", TELEGRAM_TOKEN[:10])
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome to Indra Clinic!\n\nI’m Indie, your assistant.\n\nPlease enter your full name, date of birth, and email to begin:"
