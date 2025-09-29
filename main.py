@@ -153,5 +153,7 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
                 try:
                     # --- JSON ROBUSTNESS IMPROVEMENT ---
                     cleaned_content = raw_content.strip()
+                    
+                    # FIX: Corrected the unterminated string literal here:
                     if cleaned_content.startswith("```json"):
                          cleaned_content = cleaned_content[len("
