@@ -9,6 +9,7 @@ import requests
 import json 
 import smtplib
 from email.message import EmailMessage
+import ast # <-- NEW: For robust JSON parsing
 
 # Load environment variables
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
