@@ -4,6 +4,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 import requests
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+print("Bot Token Detected:", TELEGRAM_TOKEN[:10])
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
