@@ -2,7 +2,7 @@ import os
 import sys
 import signal # Required for clean shutdown handling
 import time # Import time for a small delay
-import re # <-- For robust JSON extraction
+import re # For robust JSON extraction
 from telegram import Update, Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from telegram.error import InvalidToken, Conflict
@@ -139,9 +139,12 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
     }
     
     data = {
-        "model": "openai/gpt-3.5-turbo",
+        # --- MODEL SWITCHED TO GPT-3.5-TURBO-1106 FOR COST SAVINGS ---
+        "model": "openai/gpt-3.5-turbo-1106", 
         "messages": messages,
     }
+    
+    # *** IMPORTANT NOTE: If you experience renewed JSON errors, switch back to "anthropic/claude-3-haiku" ***
 
     for attempt in range(MAX_RETRIES):
         try:
@@ -152,7 +155,7 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
                 raw_content = response.json()["choices"][0]["message"]["content"]
                 
                 try:
-                    # --- ULTRA-ROBUST JSON EXTRACTION (REPLACED OLD FRAGILE LOGIC) ---
+                    # --- ULTRA-ROBUST JSON EXTRACTION ---
                     # Regex to find the first '{' and the last '}' to isolate the core JSON object.
                     start_index = raw_content.find('{')
                     end_index = raw_content.rfind('}')
@@ -162,7 +165,6 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
                         # Slice the raw content to isolate the suspected JSON string
                         json_string = raw_content[start_index : end_index + 1]
                     else:
-                        # If the braces aren't found, use the raw content (will likely fail parsing, but ensures we capture everything)
                         json_string = raw_content 
                     
                     # 2. Use ast.literal_eval fallback for single quotes
