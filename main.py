@@ -5,6 +5,8 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_TOKEN environment variable is not set.")
 print("Bot Token Detected:", TELEGRAM_TOKEN[:10])
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
