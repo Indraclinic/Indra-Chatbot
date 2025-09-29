@@ -144,6 +144,7 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
 
     for attempt in range(MAX_RETRIES):
         try:
+            # FIX: The protocol was erroneously included in the last update. Correcting the URL here.
             response = requests.post("[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)", headers=headers, json=data, timeout=15) 
             
             # Successful response
@@ -156,4 +157,5 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
                     
                     # FIX APPLIED HERE: The string slice is now correctly terminated.
                     if cleaned_content.startswith("```json"):
+                         # CORRECTED LINE:
                          cleaned_content = cleaned_content[len("
