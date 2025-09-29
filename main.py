@@ -157,3 +157,10 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
                     # FIX: Corrected the unterminated string literal here:
                     if cleaned_content.startswith("```json"):
                          cleaned_content = cleaned_content[len("
+http://googleusercontent.com/immersive_entry_chip/0
+
+I have corrected this line in the Canvas below. Once you redeploy this file, your Worker should start successfully and resume polling without this startup error.
+
+
+http://googleusercontent.com/immersive_entry_chip/1
+http://googleusercontent.com/immersive_entry_chip/2
