@@ -1,9 +1,10 @@
 import os
 import sys
 import signal # Required for clean shutdown handling
-from telegram import Update
+import time # Import time for a small delay
+from telegram import Update, Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-from telegram.error import InvalidToken
+from telegram.error import InvalidToken, Conflict
 import requests
 import json 
 import smtplib
@@ -226,8 +227,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
 
 
+def telegram_cleanup(token):
+    """Synchronously attempts to delete any lingering webhooks."""
+    try:
+        # We use a simple requests call here as a synchronous way to clean the webhook
+        # before the main asyncio loop starts.
+        url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){token}/deleteWebhook"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        result = response.json()
+        if result.get('ok') and result.get('result'):
+            print("Telegram cleanup successful: Previous webhook/polling session terminated.")
+        else:
+            # If result is ok but result is False, it means there was no webhook to delete, which is fine.
+            print("Telegram cleanup attempted. No active webhook found (This is expected for polling).")
+
+    except requests.exceptions.RequestException as e:
+        print(f"Telegram cleanup request failed: {e}. Attempting to proceed with polling.")
+    except Exception as e:
+        print(f"General error during Telegram cleanup: {e}")
+
+
 def start_bot_loop():
     """Builds the application and starts the polling loop safely."""
+    
+    # 1. CLEANUP STEP: Kill any previous polling/webhook sessions
+    telegram_cleanup(TELEGRAM_TOKEN)
+    time.sleep(1) # Wait briefly for the API change to register
+
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     except InvalidToken:
@@ -237,10 +264,16 @@ def start_bot_loop():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # Use the explicit start/idle method for better environment compatibility
-    app.run_polling(poll_interval=1.0, timeout=10)
-    
-    print("Bot polling initiated and running.")
+    # 2. Start polling
+    # The Conflict error is raised here if the cleanup failed or another process starts after cleanup.
+    try:
+        app.run_polling(poll_interval=1.0, timeout=10)
+        print("Bot polling initiated and running.")
+    except Conflict as e:
+        print(f"FATAL CONFLICT ERROR: {e}")
+        print("This means another bot instance with the same token is still running elsewhere.")
+        print("Please ensure ALL previous Render Workers and local instances are stopped or deleted.")
+        sys.exit(1) # Force exit if conflict occurs
 
 
 # Main function
@@ -254,6 +287,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # Signal handling is complex in Render Workers, but run_polling is generally the right call.
-    # We will stick to the revised run_polling with explicit arguments.
     main()
