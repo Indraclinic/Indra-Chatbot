@@ -139,8 +139,8 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
     }
     
     data = {
-        # --- MODEL SWITCHED TO GPT-3.5-TURBO-1106 FOR COST SAVINGS ---
-        "model": "openai/gpt-3.5-turbo-1106", 
+        # --- FIXED MODEL NAME: Reverting to the universally supported endpoint ---
+        "model": "openai/gpt-3.5-turbo", 
         "messages": messages,
     }
     
