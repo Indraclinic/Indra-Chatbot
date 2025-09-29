@@ -10,7 +10,8 @@ import requests
 import json 
 import smtplib
 from email.message import EmailMessage
-import ast 
+# The 'ast' module is no longer needed after switching to native JSON mode
+# import ast 
 
 # --- ENVIRONMENT VARIABLE CONFIGURATION ---
 # Load environment variables. These MUST be set in your Render Worker settings.
@@ -96,32 +97,27 @@ def generate_report_and_send_email(patient_info: dict, history: list, category: 
 # --- AI / OPENROUTER FUNCTIONS ---
 
 def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
-    """Queries OpenRouter, handles errors, and uses ultra-robust JSON extraction."""
+    """Queries OpenRouter, handles errors, and uses native JSON mode."""
     
     MAX_RETRIES = 3
     patient_context = f"Patient Name: {patient_info.get(FULL_NAME_KEY)}, DOB: {patient_info.get(DOB_KEY)}, Email: {patient_info.get(EMAIL_KEY)}"
-    current_user_message = history[-1]['text']
     
-    # SYSTEM PROMPT: Enforces UK English, fact-finding, and strict JSON output.
+    # SYSTEM PROMPT: Enforces UK English, fact-finding, and outlines the strict JSON structure.
     system_prompt = (
         "You are Indie, a helpful assistant for Indra Clinic. Respond using concise UK English. Do not offer medical advice. "
         "Your primary task is to respond to the patient and categorize their query into one of three strict categories: 'Admin', 'Prescription/Medication', or 'Clinical/Medical'. "
         "Crucially, if the patient's query lacks necessary details (e.g., date/time, symptoms, product name), you MUST ask a follow-up question. "
         "You MUST generate a SUMMARY of the entire conversation so far for staff review. "
         f"Patient ID: {patient_context}. Keep responses professional and focused. "
-        "Your response MUST ALWAYS be formatted as a single JSON object with the keys 'response' (text for user), 'category', and 'summary'. "
-        "NEVER output anything other than this JSON structure, even if you are asking a follow-up question."
-        "Example: {'response': 'Thank you. Can you please confirm the exact name of the product...', 'category': 'Prescription/Medication', 'summary': 'Patient requested a repeat but did not specify the product.'}"
+        "Your output MUST be a JSON object matching the requested schema."
+        "The JSON object must contain the keys 'response' (text for user), 'category', and 'summary'."
     )
 
     # The messages list should contain the full conversation history for context
     messages = [
         {"role": "system", "content": system_prompt}
     ]
-    # Add conversation history for context, ensuring we only include 'patient' and 'indie' turns
-    # Note: History format is {'role': 'patient'/'indie', 'text': 'message'}
     for turn in history:
-        # We must map 'indie' role to 'assistant' for the OpenAI model API
         role = 'assistant' if turn['role'] == 'indie' else 'user'
         messages.append({"role": role, "content": turn['text']})
 
@@ -132,8 +128,10 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
     }
     
     data = {
-        "model": "openai/gpt-3.5-turbo", # Reliable and cost-effective standard
+        # *** CHANGED MODEL TO GPT-4o MINI ***
+        "model": "openai/gpt-4o-mini", 
         "messages": messages,
+        "response_format": {"type": "json_object"} # **CRITICAL FIX: ENABLES NATIVE JSON MODE**
     }
 
     for attempt in range(MAX_RETRIES):
@@ -144,19 +142,8 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
                 raw_content = response.json()["choices"][0]["message"]["content"]
                 
                 try:
-                    # --- ULTRA-ROBUST JSON EXTRACTION ---
-                    match = re.search(r'(\{.*\})', raw_content.strip(), re.DOTALL)
-                    json_string = match.group(1).strip() if match else raw_content.strip()
-                    
-                    if json_string.startswith('{') and json_string.endswith('}'):
-                        try:
-                            parsed_dict = ast.literal_eval(json_string)
-                            json_string = json.dumps(parsed_dict)
-                        except (ValueError, SyntaxError):
-                            pass
-                    
-                    parsed_json = json.loads(json_string)
-                    # --- END EXTRACTION ---
+                    # SIMPLIFIED PARSING: Content should be clean JSON due to response_format flag
+                    parsed_json = json.loads(raw_content) 
                     
                     category = parsed_json.get('category', 'Unknown')
                     if category not in WORKFLOWS:
@@ -168,11 +155,11 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
                     return response_text, category, summary_text
                 
                 except json.JSONDecodeError:
-                    print(f"AI failed to return valid JSON. Raw: {raw_content}")
-                    print(f"Extracted string: {json_string}")
+                    # Should be rare now, but catches malformed JSON
+                    print(f"AI failed to return valid JSON despite JSON mode. Raw: {raw_content}")
                     return "I apologize, I'm having trouble processing your query.", "Unknown", "JSON parsing failed."
             
-            # --- ERROR HANDLING ---
+            # --- ERROR HANDLING (Unchanged) ---
             elif response.status_code == 402:
                 print("OPENROUTER FATAL ERROR: 402 Insufficient Credits.")
                 return "CRITICAL ERROR: The AI service reports insufficient credits. Please check your OpenRouter account billing.", "Unknown", "CRITICAL BILLING FAILURE."
