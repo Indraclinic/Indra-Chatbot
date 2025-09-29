@@ -109,15 +109,23 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
         "Crucially, if the patient's query lacks necessary details (e.g., date/time, symptoms, product name), you MUST ask a follow-up question. "
         "You MUST generate a SUMMARY of the entire conversation so far for staff review. "
         f"Patient ID: {patient_context}. Keep responses professional and focused. "
-        "Your response MUST be formatted as a single JSON object with the keys 'response' (text for user), 'category', and 'summary'."
+        "Your response MUST ALWAYS be formatted as a single JSON object with the keys 'response' (text for user), 'category', and 'summary'. "
+        "NEVER output anything other than this JSON structure, even if you are asking a follow-up question."
         "Example: {'response': 'Thank you. Can you please confirm the exact name of the product...', 'category': 'Prescription/Medication', 'summary': 'Patient requested a repeat but did not specify the product.'}"
     )
 
+    # The messages list should contain the full conversation history for context
     messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": current_user_message}
+        {"role": "system", "content": system_prompt}
     ]
-    
+    # Add conversation history for context, ensuring we only include 'patient' and 'indie' turns
+    # Note: History format is {'role': 'patient'/'indie', 'text': 'message'}
+    for turn in history:
+        # We must map 'indie' role to 'assistant' for the OpenAI model API
+        role = 'assistant' if turn['role'] == 'indie' else 'user'
+        messages.append({"role": role, "content": turn['text']})
+
+
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
@@ -137,19 +145,15 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
                 
                 try:
                     # --- ULTRA-ROBUST JSON EXTRACTION ---
-                    # 1. Use regex to find the content between the first { and the last }
                     match = re.search(r'(\{.*\})', raw_content.strip(), re.DOTALL)
                     json_string = match.group(1).strip() if match else raw_content.strip()
                     
-                    # 2. Use ast.literal_eval fallback to safely handle single quotes ('')
                     if json_string.startswith('{') and json_string.endswith('}'):
                         try:
-                            # Safely convert Python literal to dictionary
                             parsed_dict = ast.literal_eval(json_string)
-                            # Dump back to strict JSON format for reliable json.loads
                             json_string = json.dumps(parsed_dict)
                         except (ValueError, SyntaxError):
-                            pass # Keep original string if ast fails
+                            pass
                     
                     parsed_json = json.loads(json_string)
                     # --- END EXTRACTION ---
@@ -173,15 +177,33 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
                 print("OPENROUTER FATAL ERROR: 402 Insufficient Credits.")
                 return "CRITICAL ERROR: The AI service reports insufficient credits. Please check your OpenRouter account billing.", "Unknown", "CRITICAL BILLING FAILURE."
             
-            # (Other error handlers remain the same)
-            # ... [Error handling block] ...
-            # Removed for brevity in the final block, but present in full file.
+            elif response.status_code in (401, 403):
+                print(f"OPENROUTER FATAL ERROR: Status Code {response.status_code}. Details: {response.text}")
+                return "ERROR: Authentication failed. Please check the OPENROUTER_API_KEY.", "Unknown", "Auth Failure."
+
+            elif response.status_code in (429, 500, 502, 503, 504):
+                if attempt < MAX_RETRIES - 1:
+                    wait_time = 2 ** attempt
+                    print(f"OPENROUTER RETRYABLE ERROR: Status Code {response.status_code}. Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    print(f"OPENROUTER FAILED after {MAX_RETRIES} attempts. Status Code {response.status_code}. Details: {response.text}")
+                    return "Sorry, the AI service is currently unavailable or busy. Please try again.", "Unknown", "Service Unavailable."
+            
             else:
+                print(f"OPENROUTER NON-RETRYABLE ERROR: Status Code {response.status_code}. Details: {response.text}")
                 return "Sorry, the AI service is currently unavailable or busy. Please try again.", "Unknown", "API Error."
 
         except requests.exceptions.RequestException:
-            # Removed retry logic for brevity but present in full file.
-            return "I am experiencing connectivity issues right now. Please try again later.", "Unknown", "Network Timeout."
+            if attempt < MAX_RETRIES - 1:
+                wait_time = 2 ** attempt
+                print(f"OpenRouter Network Error: Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            else:
+                print(f"OpenRouter Network/Timeout FAILED after {MAX_RETRIES} attempts.")
+                return "I am experiencing connectivity issues right now. Please try again later.", "Unknown", "Network Timeout."
         
         except Exception as e:
             print(f"General Error in query_openrouter: {e}")
