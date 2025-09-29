@@ -155,17 +155,16 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
                 raw_content = response.json()["choices"][0]["message"]["content"]
                 
                 try:
-                    # --- ULTRA-ROBUST JSON EXTRACTION ---
-                    # Regex to find the first '{' and the last '}' to isolate the core JSON object.
-                    start_index = raw_content.find('{')
-                    end_index = raw_content.rfind('}')
+                    # --- NEW, SIMPLIFIED JSON EXTRACTION using Regex ---
+                    # Regex pattern to find the first JSON object: searches for { ... }
+                    # and uses DOTALL to span multiple lines.
+                    match = re.search(r'(\{.*\})', raw_content.strip(), re.DOTALL)
                     
-                    json_string = ""
-                    if start_index != -1 and end_index != -1 and end_index > start_index:
-                        # Slice the raw content to isolate the suspected JSON string
-                        json_string = raw_content[start_index : end_index + 1]
+                    if match:
+                        json_string = match.group(1).strip()
                     else:
-                        json_string = raw_content 
+                        # If no JSON object is found by regex, use raw content (will likely fail, but logs the raw input)
+                        json_string = raw_content.strip()
                     
                     # 2. Use ast.literal_eval fallback for single quotes
                     if json_string.startswith('{') and json_string.endswith('}'):
@@ -179,7 +178,7 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
                             pass
                     
                     parsed_json = json.loads(json_string)
-                    # --- END ULTRA-ROBUST JSON EXTRACTION ---
+                    # --- END SIMPLIFIED JSON EXTRACTION ---
                     
                     category = parsed_json.get('category', 'Unknown')
                     if category not in WORKFLOWS:
