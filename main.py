@@ -2,7 +2,7 @@ import os
 import sys
 import signal # Required for clean shutdown handling
 import time # Import time for a small delay
-import re # <-- NEW: For robust JSON extraction
+import re # <-- For robust JSON extraction
 from telegram import Update, Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from telegram.error import InvalidToken, Conflict
@@ -110,7 +110,7 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
     patient_context = f"Patient Name: {patient_info.get(FULL_NAME_KEY)}, DOB: {patient_info.get(DOB_KEY)}, Email: {patient_info.get(EMAIL_KEY)}"
     current_user_message = history[-1]['text']
     
-    # --- UPDATED SYSTEM PROMPT FOR UK ENGLISH & FACT-FINDING AND SUMMARY REQUEST ---
+    # --- SYSTEM PROMPT FOR UK ENGLISH & FACT-FINDING AND SUMMARY REQUEST ---
     system_prompt = (
         "You are Indie, a helpful assistant for Indra Clinic. Respond using concise UK English. Do not offer medical advice. "
         "Your primary task is to respond to the patient and categorize their query into one of three strict categories: 'Admin', 'Prescription/Medication', or 'Clinical/Medical'. "
@@ -126,7 +126,7 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
         "Your response MUST be formatted as a single JSON object with the keys 'response' (the text for the user), 'category' (one of the three strict categories), and 'summary' (a brief summary of the query for staff)."
         "Example: {'response': 'Thank you. Can you please confirm the exact name of the product...', 'category': 'Prescription/Medication', 'summary': 'Patient has requested a repeat prescription but did not specify the product name.'}"
     )
-    # --- END UPDATED SYSTEM PROMPT ---
+    # --- END SYSTEM PROMPT ---
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -152,22 +152,20 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
                 raw_content = response.json()["choices"][0]["message"]["content"]
                 
                 try:
-                    # --- NEW ROBUST JSON EXTRACTION ---
-                    json_string = raw_content.strip()
+                    # --- ULTRA-ROBUST JSON EXTRACTION (REPLACED OLD FRAGILE LOGIC) ---
+                    # Regex to find the first '{' and the last '}' to isolate the core JSON object.
+                    start_index = raw_content.find('{')
+                    end_index = raw_content.rfind('}')
                     
-                    # 1. Attempt to find JSON object enclosed in triple backticks (```json...```)
-                    # This regex is the robust fix, isolating the content between the markers.
-                    match = re.search(r'```json\s*(\{[\s\S]*?\})\s*```', raw_content)
-                    if match:
-                        json_string = match.group(1)
+                    json_string = ""
+                    if start_index != -1 and end_index != -1 and end_index > start_index:
+                        # Slice the raw content to isolate the suspected JSON string
+                        json_string = raw_content[start_index : end_index + 1]
                     else:
-                        # 2. If no wrapper, attempt to find a standalone JSON object
-                        json_match = re.search(r'(\{[\s\S]*?\})', raw_content)
-                        if json_match:
-                            json_string = json_match.group(1)
-                        # If neither is found, we fall through to the ast.literal_eval check
+                        # If the braces aren't found, use the raw content (will likely fail parsing, but ensures we capture everything)
+                        json_string = raw_content 
                     
-                    # 3. Use ast.literal_eval to safely convert Python dictionary string (using single quotes) to a dictionary
+                    # 2. Use ast.literal_eval fallback for single quotes
                     if json_string.startswith('{') and json_string.endswith('}'):
                         try:
                             # Safely evaluate as a Python literal (handles single quotes)
@@ -175,11 +173,11 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
                             # Convert back to JSON string format for reliable json.loads
                             json_string = json.dumps(parsed_dict)
                         except (ValueError, SyntaxError):
-                            # If literal_eval fails, assume it's standard JSON or bad input
+                            # If literal_eval fails, pass the string as-is for json.loads
                             pass
                     
                     parsed_json = json.loads(json_string)
-                    # --- END JSON ROBUSTNESS IMPROVEMENT ---
+                    # --- END ULTRA-ROBUST JSON EXTRACTION ---
                     
                     category = parsed_json.get('category', 'Unknown')
                     if category not in WORKFLOWS:
@@ -192,8 +190,8 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
                 
                 except json.JSONDecodeError:
                     print(f"AI failed to return valid JSON. Raw: {raw_content}")
-                    print(f"Attempted clean content: {json_string}")
-                    # Return error message and default empty summary
+                    print(f"Extracted string: {json_string}")
+                    # This is the point of failure. Returns the generic message.
                     return "I apologize, I'm having trouble processing your query.", "Unknown", "JSON parsing failed."
 
             # Failure Response (Authentication, Rate Limit, Server Error)
