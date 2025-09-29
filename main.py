@@ -154,6 +154,6 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str]:
                     # --- JSON ROBUSTNESS IMPROVEMENT ---
                     cleaned_content = raw_content.strip()
                     
-                    # FIX: Corrected the slice operation on line 157 (and 159 in your log)
+                    # FIX APPLIED HERE: The string slice is now correctly terminated.
                     if cleaned_content.startswith("```json"):
                          cleaned_content = cleaned_content[len("
