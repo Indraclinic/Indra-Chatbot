@@ -99,6 +99,9 @@ def generate_report_and_send_email(patient_info: dict, history: list, category: 
 def query_openrouter(patient_info: dict, history: list) -> tuple[str, str]:
     """Queries OpenRouter to get the bot's response AND categorize the workflow."""
     
+    # Configuration for exponential backoff
+    MAX_RETRIES = 3
+    
     # ... (OpenRouter logic remains the same) ...
     patient_context = f"Patient Name: {patient_info.get(FULL_NAME_KEY)}, DOB: {patient_info.get(DOB_KEY)}, Email: {patient_info.get(EMAIL_KEY)}"
     current_user_message = history[-1]['text']
@@ -127,54 +130,71 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str]:
         "messages": messages,
     }
 
-    try:
-        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=15) 
-        
-        # --- ENHANCED ERROR LOGGING HERE ---
-        if response.status_code != 200:
-            print(f"OPENROUTER ERROR: Status Code {response.status_code}")
-            try:
-                # Log specific error message from OpenRouter body if available
-                error_data = response.json()
-                print(f"API Error Details: {error_data.get('error', 'No error details provided')}")
-                
-                # Check for common authentication failure (401 or 403)
-                if response.status_code in (401, 403):
-                    return "ERROR: Authentication failed. Please check the OPENROUTER_API_KEY.", "Unknown"
-                
-            except json.JSONDecodeError:
-                print("API returned non-JSON error response.")
-            
-            # For any other non-200 status (e.g., 500, 429 Rate Limit)
-            return "Sorry, the AI service is currently unavailable or busy. Please try again.", "Unknown"
-        # --- END ENHANCED ERROR LOGGING ---
-
-        raw_content = response.json()["choices"][0]["message"]["content"]
-        
+    for attempt in range(MAX_RETRIES):
         try:
-            # Clean up potential markdown wrapper
-            if raw_content.strip().startswith("```json"):
-                 raw_content = raw_content.strip()[7:-3].strip()
+            response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=15) 
             
-            parsed_json = json.loads(raw_content)
-            
-            category = parsed_json.get('category', 'Unknown')
-            if category not in WORKFLOWS:
-                category = 'Unknown' 
+            # Successful response
+            if response.status_code == 200:
+                raw_content = response.json()["choices"][0]["message"]["content"]
                 
-            return parsed_json.get('response', "I am unable to formulate a response right now."), category
+                try:
+                    # Clean up potential markdown wrapper
+                    if raw_content.strip().startswith("```json"):
+                         raw_content = raw_content.strip()[7:-3].strip()
+                    
+                    parsed_json = json.loads(raw_content)
+                    
+                    category = parsed_json.get('category', 'Unknown')
+                    if category not in WORKFLOWS:
+                        category = 'Unknown' 
+                        
+                    return parsed_json.get('response', "I am unable to formulate a response right now."), category
+                
+                except json.JSONDecodeError:
+                    print(f"AI failed to return valid JSON. Raw: {raw_content}")
+                    # Don't retry JSON decode errors, treat as final failure
+                    return "I apologize, I'm having trouble processing your query.", "Unknown"
+
+            # Failure Response
+            elif response.status_code in (401, 403):
+                # Authentication failures are fatal and should not be retried
+                print(f"OPENROUTER FATAL ERROR: Status Code {response.status_code}. Details: {response.text}")
+                return "ERROR: Authentication failed. Please check the OPENROUTER_API_KEY.", "Unknown"
+
+            elif response.status_code in (429, 500, 502, 503, 504):
+                # Retryable errors: Rate limits (429) or transient server errors (5xx)
+                if attempt < MAX_RETRIES - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff (1s, 2s, 4s)
+                    print(f"OPENROUTER RETRYABLE ERROR: Status Code {response.status_code}. Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue  # Go to the next attempt loop
+                else:
+                    print(f"OPENROUTER FAILED after {MAX_RETRIES} attempts. Status Code {response.status_code}. Details: {response.text}")
+                    return "Sorry, the AI service is currently unavailable or busy. Please try again.", "Unknown"
+            
+            else:
+                # Catch non-retryable errors (e.g., 400 Bad Request)
+                print(f"OPENROUTER NON-RETRYABLE ERROR: Status Code {response.status_code}. Details: {response.text}")
+                return "Sorry, the AI service is currently unavailable or busy. Please try again.", "Unknown"
+
+        except requests.exceptions.RequestException as e:
+            # Catches network failures (DNS, timeout, connection lost)
+            if attempt < MAX_RETRIES - 1:
+                wait_time = 2 ** attempt
+                print(f"OpenRouter Network Error: {e}. Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            else:
+                print(f"OpenRouter Network/Timeout FAILED after {MAX_RETRIES} attempts. Error: {e}")
+                return "I am experiencing connectivity issues right now. Please try again later.", "Unknown"
         
-        except json.JSONDecodeError:
-            print(f"AI failed to return valid JSON. Raw: {raw_content}")
-            return "I apologize, I'm having trouble processing your query.", "Unknown"
-        
-    except requests.exceptions.RequestException as e:
-        # This catches actual network failures (DNS, timeout, connection lost)
-        print(f"OpenRouter Network/Timeout Error: {e}")
-        return "I am experiencing connectivity issues right now. Please try again later.", "Unknown"
-    except Exception as e:
-        print(f"General Error in query_openrouter: {e}")
-        return "Sorry, there was a problem processing your request.", "Unknown"
+        except Exception as e:
+            print(f"General Error in query_openrouter: {e}")
+            return "Sorry, there was a problem processing your request.", "Unknown"
+
+    # Should be unreachable if loop is correct, but included for safety
+    return "Sorry, a final critical error occurred.", "Unknown"
 
 
 # --- TELEGRAM HANDLERS ---
@@ -251,6 +271,7 @@ def telegram_cleanup(token):
     try:
         # We use a simple requests call here as a synchronous way to clean the webhook
         # before the main asyncio loop starts.
+        # NOTE: The protocol must be explicitly included in the URL string, fixing a possible issue:
         url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){token}/deleteWebhook"
         response = requests.get(url, timeout=5)
         response.raise_for_status()
