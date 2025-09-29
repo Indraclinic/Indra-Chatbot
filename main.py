@@ -1,47 +1,75 @@
 import os
+import httpx
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+)
 
+# Load environment variables
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
+# Safety checks
 if not TELEGRAM_TOKEN:
-    raise ValueError("TELEGRAM_TOKEN environment variable is not set.")
-print("Bot Token Detected:", TELEGRAM_TOKEN[:10])
+    raise ValueError("TELEGRAM_TOKEN is not set.")
+if not OPENROUTER_API_KEY:
+    print("⚠️ OPENROUTER_API_KEY is not set — /ask command will not work.")
 
+# /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Welcome to Indra Clinic!\n\nI’m Indie, your assistant.\n\nPlease enter your full name, date of birth, and email to begin:"
+        "👋 Welcome to Indra Clinic!\n\nI’m Indie, your assistant.\n\nUse /ask followed by a question to get started."
     )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text
-    response = query_openrouter(user_message)
-    await update.message.reply_text(response)
+# /ask command handler
+async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not OPENROUTER_API_KEY:
+        await update.message.reply_text("❌ OpenRouter API key not configured.")
+        return
 
-def query_openrouter(user_message):
+    user_input = " ".join(context.args)
+    if not user_input:
+        await update.message.reply_text("Please provide a question after /ask.")
+        return
+
+    # Call OpenRouter
+    try:
+        response = await query_openrouter(user_input)
+        await update.message.reply_text(response)
+    except Exception as e:
+        print(f"Error querying OpenRouter: {e}")
+        await update.message.reply_text("⚠️ Something went wrong. Please try again later.")
+
+# Function to call OpenRouter API
+async def query_openrouter(prompt: str) -> str:
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
+
     body = {
         "model": "openai/gpt-3.5-turbo",
         "messages": [
-            {"role": "system", "content": "You are Indie, a helpful assistant for Indra Clinic. Do not offer medical advice. Help patients register, check on their prescriptions, and refer clinical issues to staff."},
-            {"role": "user", "content": user_message}
+            {"role": "system", "content": "You are Indie, a helpful assistant for Indra Clinic. Do not give medical advice. Help with admin and clinic info."},
+            {"role": "user", "content": prompt}
         ]
     }
-    try:
-        res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=body)
-        res.raise_for_status()
-        return res.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        return f"❌ Sorry, there was a problem: {e}"
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=body)
+        if response.status_code == 200:
+            return response.json()["choices"][0]["message"]["content"]
+        else:
+            raise RuntimeError(f"OpenRouter API error: {response.status_code} - {response.text}")
 
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    # Handlers
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler("ask", ask))
+
+    print("✅ Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
