@@ -15,9 +15,8 @@ from email.message import EmailMessage
 # --- ENVIRONMENT VARIABLE CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-CLINICAL_EMAIL = os.getenv("CLINICAL_EMAIL", "clinical@example.com")
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@example.com")
-PRESCRIPTION_EMAIL = os.getenv("PRESCRIPTION_EMAIL", "prescribe@example.com")
+# --- MODIFICATION --- Consolidated the target email address
+REPORT_EMAIL = os.getenv("REPORT_EMAIL", "drT@indra.clinic") 
 SMTP_SERVER = os.getenv("SMTP_SERVER")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME")
@@ -43,53 +42,63 @@ STATE_AWAITING_DOB = 'awaiting_dob'
 STATE_AWAITING_CATEGORY = 'awaiting_category'
 STATE_CHAT_ACTIVE = 'chat_active'
 STATE_AWAITING_CONFIRMATION = 'awaiting_confirmation'
-STATE_AWAITING_NEW_QUERY = 'awaiting_new_query' # --- MODIFICATION ---
+STATE_AWAITING_NEW_QUERY = 'awaiting_new_query'
 WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
 
 
 # --- REPORTING AND INTEGRATION FUNCTIONS ---
 
+# --- MODIFICATION --- Function updated to attach transcript as a .txt file.
 def generate_report_and_send_email(patient_id: str, dob: str, history: list, category: str, summary: str):
-    """Generates a report, sends emails, and simulates an EMR push."""
-    target_email = {
-        "Admin": ADMIN_EMAIL,
-        "Prescription/Medication": PRESCRIPTION_EMAIL,
-        "Clinical/Medical": CLINICAL_EMAIL
-    }.get(category, ADMIN_EMAIL)
-
-    report_content = (
-        f"--- INDRA CLINIC BOT REPORT ---\n\n"
-        f"Patient ID: {patient_id}\n"
-        f"Patient DOB (for verification): {dob}\n"
-        f"Query Category: {category}\n"
-        f"----------------------------------\n\n"
-        f"*** AI-Generated Summary ***\n{summary}\n\n"
-        f"*** Full Conversation Transcript ***\n"
-    )
-    for message in history:
-        report_content += f"[{message['role'].upper()}]: {message['text']}\n"
+    """
+    Generates a report with summary in the body and a full transcript as a .txt attachment,
+    then sends it to a single clinical email address.
+    """
     
+    # 1. Create the email subject
+    subject = f"[Indie Bot] {category} Query for Patient ID: {patient_id} (DOB: {dob})"
+    if category == "Clinical/Medical":
+        subject = f"[URGENT] " + subject
+
+    # 2. Create the email body with the summary
+    email_body = (
+        f"A new query has been logged via the Indra Clinic Bot.\n\n"
+        f"Patient ID: {patient_id}\n"
+        f"Patient DOB: {dob}\n"
+        f"Category: {category}\n\n"
+        f"--- AI-Generated Summary ---\n{summary}"
+    )
+
+    # 3. Create the full transcript for the attachment
+    transcript_content = f"Full Conversation Transcript for Patient ID: {patient_id}\n\n"
+    for message in history:
+        transcript_content += f"[{message['role'].upper()}]: {message['text']}\n"
+    
+    # 4. Simulate the EMR push
     print(f"--- SEMBLE EMR PUSH SIMULATION for Patient ID: {patient_id} ---")
     
+    # 5. Send the email
     try:
         if not all([SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER]):
             print("Email skipped: SMTP configuration is incomplete.")
             return
 
+        msg = EmailMessage()
+        msg['Subject'] = subject
+        msg['From'] = SMTP_USERNAME
+        msg['To'] = REPORT_EMAIL
+        msg.set_content(email_body)
+
+        # Attach the transcript as a .txt file
+        msg.add_attachment(transcript_content.encode('utf-8'), 
+                           maintype='text', subtype='plain', 
+                           filename=f'transcript_{patient_id}.txt')
+
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            staff_msg = EmailMessage()
-            subject = f"[Indie Bot] New {category.upper()} Query for Patient ID: ...{patient_id[-4:]}"
-            if category == "Clinical/Medical":
-                subject = f"[URGENT] " + subject
-            
-            staff_msg['Subject'] = subject
-            staff_msg['From'] = SMTP_USERNAME
-            staff_msg['To'] = target_email
-            staff_msg.set_content(report_content)
-            server.send_message(staff_msg)
-            print(f"Report successfully emailed to {target_email}")
+            server.send_message(msg)
+            print(f"Report successfully emailed to {REPORT_EMAIL}")
 
     except Exception as e:
         print(f"EMAIL DISPATCH FAILED: {e}")
@@ -98,10 +107,7 @@ def generate_report_and_send_email(patient_id: str, dob: str, history: list, cat
 # --- AI / OPENROUTER FUNCTIONS ---
 
 def query_openrouter(history: list) -> tuple[str, str, str, str]:
-    """
-    Queries OpenRouter with an anonymised conversation history.
-    The AI is grounded with information from the patient guidance and consent form.
-    """
+    """Queries OpenRouter with an anonymised conversation history."""
     system_prompt = textwrap.dedent("""\
         You are Indie, a helpful assistant for Indra Clinic, a UK-based medical cannabis clinic.
         Your tone must be professional, empathetic, and clear. Use appropriate medical terminology but avoid complex jargon.
@@ -112,31 +118,26 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
         - Only set 'action' to 'REPORT' when you have gathered all necessary information and are providing a final statement, not a question.
 
         **Information Gathering vs. Giving Advice:**
-        - **Giving Advice (Forbidden):** Never tell the user what to do about their medical condition. Do not suggest treatments or interpret symptoms.
-        - **Gathering Information (Required):** When a patient mentions a clinical issue (e.g., 'itchy foot', 'headache'), your role IS to ask clarifying questions to understand it. Ask about onset, duration, severity, location, etc. This is essential data collection for the clinical team's report.
+        - **Giving Advice (Forbidden):** Never tell the user what to do about their medical condition.
+        - **Gathering Information (Required):** When a patient mentions a clinical issue (e.g., 'itchy foot'), your role IS to ask clarifying questions to understand it. Ask about onset, duration, severity, etc.
 
         **Answering General Questions:**
-        You can answer general questions based *only* on the official clinic guidance below. Frame answers as 'According to the patient guidance leaflet...'. If guidance doesn't cover a question, say you don't have the information and advise contacting the clinic.
+        You can answer general questions based *only* on the official clinic guidance below. Frame answers as 'According to the patient guidance leaflet...'.
 
         --- KEY PATIENT CONSENT PRINCIPLES ---
         - The clinic provides prescriptions but does not dispense medication directly.
         - A prescription is not guaranteed after a consultation.
-        - Patients must provide accurate medical information.
-        - The medication is prescribed on an 'unlicensed' basis.
 
         --- OFFICIAL PATIENT GUIDANCE ---
         1.  **Medication Usage:**
             - **Flower:** Use in a vaporiser, start at 180°C (max 210°C), wait 5 mins between inhalations.
             - **Vapes:** One short (2 sec) puff, wait 5 mins before repeating.
-            - **Pastilles:** Dissolve in mouth, effects in 30-90 mins.
-            - **Oils:** Under the tongue for ~1 minute.
         2.  **Side Effects:**
-            - **Mild (dizzy, sleepy, fast heartbeat):** Rest and contact the clinic if concerned.
-            - **Severe (chest pain, severe paranoia, trouble breathing):** Call 999 or 111 immediately.
+            - **Mild (dizzy, sleepy):** Rest and contact the clinic if concerned.
+            - **Severe (chest pain, trouble breathing):** Call 999 or 111 immediately.
         3.  **Safety:**
-            - **Driving:** Illegal if impaired (impairment can last 24+ hours).
+            - **Driving:** Illegal if impaired.
             - **Alcohol:** Avoid alcohol.
-            - **Storage:** Keep locked away, cool, and dark.
             - **Travel:** UK only. Check with embassy for international travel.
         --- END OF GUIDANCE ---
     """)
@@ -160,14 +161,8 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
             parsed.get('summary', 'No summary was generated.'),
             parsed.get('action', 'CONTINUE').upper()
         )
-    except requests.exceptions.RequestException as e:
-        print(f"Network Error querying OpenRouter: {e}")
-        return "I'm experiencing connectivity issues at the moment. Please try again in a little while.", "Admin", "Network error", "CONTINUE"
-    except (json.JSONDecodeError, KeyError) as e:
-        print(f"Error parsing AI response: {e}")
-        return "I received an unexpected response from our AI service. Let's try that again.", "Admin", "Parsing error", "CONTINUE"
     except Exception as e:
-        print(f"An unexpected error occurred in query_openrouter: {e}")
+        print(f"An error occurred in query_openrouter: {e}")
         return "A technical issue occurred. Please try your request again.", "Admin", "Unhandled error", "CONTINUE"
 
 
@@ -181,23 +176,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome to Indra Clinic! I’m Indie, your digital assistant.\n\n"
         "**Purpose of this Chat:** Please note that this chat is **not intended to provide medical advice.** "
-        "It is an administrative tool designed to improve our workflow and help us address your queries more efficiently."
+        "It is an administrative tool to improve our workflow."
     )
     await asyncio.sleep(1.5)
 
     await update.message.reply_text(
-        "This service is currently in beta testing. If you would prefer, you can email us directly at drT@indra.clinic at any time."
+        "This service is in beta testing. If you prefer, you can email us directly at drT@indra.clinic."
     )
     await asyncio.sleep(1.5)
 
     consent_message = (
         "Before we continue, please read our brief privacy notice:\n\n"
         "**Your Privacy at Indra Clinic**\n"
-        "To use this service, we need to verify your identity and record this conversation in your patient file.\n\n"
-        "• **For Verification:** We use your Patient ID and Date of Birth only to securely associate this chat with your patient record.\n"
-        "• **For AI Assistance:** To understand your request, your anonymised conversation is processed by a third-party AI service. Your personal details are never shared with the AI.\n"
-        "• **For Your Medical Record:** A transcript of this chat will be saved to your official file in our secure Semble EMR system.\n\n"
-        "To confirm you have read this and wish to proceed, please type **'I agree'**."
+        "• **For Verification:** We use your Patient ID and Date of Birth to associate this chat with your patient record.\n"
+        "• **For AI Assistance:** Your anonymised conversation is processed by a third-party AI to understand your request.\n"
+        "• **For Your Medical Record:** A summary of this chat will be added to your secure Semble EMR file.\n\n"
+        "To confirm and proceed, please type **'I agree'**."
     )
     await update.message.reply_text(consent_message)
 
@@ -207,9 +201,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text.strip()
     
     category_map = {
-        '1': 'Administrative', 'admin': 'Administrative', 'administrative': 'Administrative',
-        '2': 'Prescription/Medication', 'prescription': 'Prescription/Medication', 'medication': 'Prescription/Medication',
-        '3': 'Clinical/Medical', 'clinical': 'Clinical/Medical', 'medical': 'Clinical/Medical'
+        '1': 'Administrative', 'admin': 'Administrative',
+        '2': 'Prescription/Medication', 'prescription': 'Prescription/Medication',
+        '3': 'Clinical/Medical', 'clinical': 'Clinical/Medical'
     }
 
     if current_state == STATE_AWAITING_CONSENT:
@@ -217,7 +211,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[STATE_KEY] = STATE_AWAITING_PATIENT_ID
             await update.message.reply_text("Thank you. Please provide your **Patient ID**. This is the 10-character code included in all letters emailed to you.")
         else:
-            await update.message.reply_text("To continue, you must consent to the privacy notice. Please type 'I agree' to proceed.")
+            await update.message.reply_text("To continue, please type 'I agree' to proceed.")
     
     elif current_state == STATE_AWAITING_PATIENT_ID:
         if user_message:
@@ -225,7 +219,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[STATE_KEY] = STATE_AWAITING_DOB
             await update.message.reply_text("Thank you. For security, please also provide your **Date of Birth** (in DD/MM/YYYY format).")
         else:
-            await update.message.reply_text("Hmmm, that seems to be empty. Please provide your 10-character Patient ID to continue.")
+            await update.message.reply_text("Hmmm, that seems to be empty. Please provide your 10-character Patient ID.")
 
     elif current_state == STATE_AWAITING_DOB:
         if len(user_message) >= 8:
@@ -235,13 +229,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await update.message.reply_text(
                 f"Thank you. I've securely noted those details for our report.\n\n"
-                "To ensure your query is directed to the appropriate team, please select the category that best describes your request:\n\n"
+                "Please select the category for your query:\n\n"
                 "1. **Administrative**\n"
                 "2. **Prescription/Medication**\n"
                 "3. **Clinical/Medical**"
             )
         else:
-            await update.message.reply_text("Hmmm, that date doesn't look quite right. Could you please provide it in DD/MM/YYYY format?")
+            await update.message.reply_text("Hmmm, that date doesn't look right. Please provide it in DD/MM/YYYY format.")
 
     elif current_state == STATE_AWAITING_CATEGORY:
         cleaned_message = user_message.lower()
@@ -249,19 +243,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if matched_category:
             context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
-            context.user_data[HISTORY_KEY].append({"role": "user", "text": f"The user selected the '{matched_category}' category for their query."})
+            context.user_data[HISTORY_KEY].append({"role": "user", "text": f"Selected category: '{matched_category}'."})
             
             if matched_category == 'Clinical/Medical':
-                await update.message.reply_text(
-                    f"Thank you, I've noted this as a **Clinical/Medical** query. "
-                    "To create a detailed report for the team, please start by describing the symptoms or issue you are experiencing."
-                )
+                await update.message.reply_text(f"Thank you. For this **Clinical/Medical** query, please start by describing the issue.")
             else:
-                await update.message.reply_text(
-                    f"Thank you. I've categorized your query under **{matched_category}**. Please describe your request in detail now."
-                )
+                await update.message.reply_text(f"Thank you. For this **{matched_category}** query, please describe your request.")
         else:
-            await update.message.reply_text("Hmmm, I don't quite understand that choice. Please reply with the number or name of the category that best fits your query.")
+            await update.message.reply_text("I don't understand that choice. Please reply with a number (1-3) or name.")
 
     elif current_state == STATE_CHAT_ACTIVE:
         context.user_data[HISTORY_KEY].append({"role": "user", "text": user_message})
@@ -276,13 +265,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[STATE_KEY] = STATE_AWAITING_CONFIRMATION
             await update.message.reply_text(
                 f"---\n**Query Summary**\n---\n"
-                f"I have prepared the following summary for the **{category}** team. "
-                f"Please review it for accuracy before we formally log it.\n\n"
+                f"I have prepared the following summary for the **{category}** team. Please review it for accuracy.\n\n"
                 f"**Summary:** *{summary}*\n\n"
-                "Is this summary correct and complete? Please reply with **'Yes'** to confirm or **'No'** to add more details."
+                "Is this summary correct? Please reply with **'Yes'** to confirm or **'No'** to add more details."
             )
 
-    # --- MODIFICATION --- Updated logic for after a query is confirmed.
     elif current_state == STATE_AWAITING_CONFIRMATION:
         confirmation = user_message.lower()
         if confirmation in ['yes', 'y', 'correct', 'confirm']:
@@ -296,39 +283,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
             await update.message.reply_text(
-                "Thank you for confirming. Your query has been securely logged and dispatched.\n\n"
-                "Is there anything else I can help you with today? You can choose a category below or type **'No'** to end the chat.\n\n"
-                "1. **Administrative**\n"
-                "2. **Prescription/Medication**\n"
-                "3. **Clinical/Medical**"
+                "Thank you for confirming. Your query has been logged.\n\n"
+                "Is there anything else I can help you with? You can choose a category or type **'No'** to end the chat.\n\n"
+                "1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**"
             )
             
         elif confirmation in ['no', 'n', 'incorrect', 'amend']:
             context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
-            context.user_data[HISTORY_KEY].append({"role": "user", "text": "The previous summary was not correct."})
-            await update.message.reply_text("Understood. Please provide any corrections or additional information now.")
+            context.user_data[HISTORY_KEY].append({"role": "user", "text": "The summary was not correct."})
+            await update.message.reply_text("Understood. Please provide any corrections or additional information.")
         
         else:
-            await update.message.reply_text("I didn't quite understand. Please confirm with 'Yes' or 'No'.")
+            await update.message.reply_text("I didn't understand. Please confirm with 'Yes' or 'No'.")
             
-    # --- MODIFICATION --- New state to handle the end-of-conversation loop.
     elif current_state == STATE_AWAITING_NEW_QUERY:
         cleaned_message = user_message.lower()
         matched_category = next((v for k, v in category_map.items() if k in cleaned_message), None)
 
         if matched_category:
-            # Start a new query
             context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
-            context.user_data[HISTORY_KEY] = [{"role": "user", "text": f"The user wants to start a new query in the '{matched_category}' category."}]
-            context.user_data.pop(TEMP_REPORT_KEY, None) # Clear old report data
-            await update.message.reply_text(f"Of course. Let's begin a new query for **{matched_category}**. Please describe your issue in detail.")
+            context.user_data[HISTORY_KEY] = [{"role": "user", "text": f"Starting new query: '{matched_category}'."}]
+            context.user_data.pop(TEMP_REPORT_KEY, None)
+            await update.message.reply_text(f"Of course. Let's begin a new query for **{matched_category}**. Please describe your issue.")
         elif any(word in cleaned_message for word in ['no', 'nope', 'bye', 'end', 'finish', 'done']):
-            # End the conversation
             await update.message.reply_text("Thank you for using our service. Be well. You can now close this chat, or type /start to begin again.")
             context.user_data.clear()
         else:
-            # Ask for clarification
-            await update.message.reply_text("I didn't quite understand. Please select a category (1-3) to start a new query, or type 'No' to end our chat.")
+            await update.message.reply_text("I didn't understand. Please select a category (1-3) or type 'No' to end.")
 
     else:
         await start(update, context)
