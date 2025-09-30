@@ -48,7 +48,7 @@ if not TELEGRAM_TOKEN or not OPENROUTER_API_KEY:
     WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
 
 
-    async def push_to_semble(patient_email: str, category: str, summary: str, transcript: str):
+async def push_to_semble(...):
     """Finds a patient by email using GraphQL, then pushes a new FreeTextRecord."""
     if not SEMBLE_API_KEY:
         raise ValueError("Semble API Key is not configured on the server.")
