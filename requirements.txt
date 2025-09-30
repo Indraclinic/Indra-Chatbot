@@ -1,4 +1,4 @@
-python-telegram-bot[ext, job-queue]
+python-telegram-bot[ext, job-queue]==21.4
 requests
 httpx
 python-dotenv
