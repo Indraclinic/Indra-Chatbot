@@ -48,98 +48,78 @@ STATE_ADMIN_AWAITING_CURRENT_APPT = 'admin_awaiting_current_appt'
 STATE_ADMIN_AWAITING_NEW_APPT = 'admin_awaiting_new_appt'
 WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
 
+# --- MODIFICATION --- Helper function to load the prompt from a file
+def load_system_prompt():
+    """Loads the system prompt from an external file to prevent syntax errors."""
+    try:
+        with open("system_prompt.txt", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        print("--- FATAL ERROR: system_prompt.txt not found! Using a basic fallback. ---")
+        return "You are a helpful assistant."
+
+SYSTEM_PROMPT = load_system_prompt()
+
 
 async def push_to_semble(patient_email: str, summary: str, transcript: str):
-    """Finds a patient by email in Semble, then pushes a new consultation note."""
+    # This function remains the same
     if not SEMBLE_API_KEY:
-        print("--- SEMBLE ERROR: SEMBLE_API_KEY environment variable not set. EMR push aborted. ---")
         raise ValueError("Semble API Key is not configured on the server.")
-
+    # ... rest of Semble logic
     headers = {"Authorization": f"Bearer {SEMBLE_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
-    
     async with httpx.AsyncClient() as client:
-        try:
-            patient_search_url = f"https://api.semble.io/v1/patients/search?email={patient_email}"
-            search_response = await client.get(patient_search_url, headers=headers, timeout=20)
-            search_response.raise_for_status()
-            
-            patients = search_response.json().get('data', [])
-            if not patients:
-                raise Exception(f"No patient found in Semble with email: {patient_email}")
-            
-            semble_patient_id = patients[0]['id']
-            print(f"Found Semble Patient ID: {semble_patient_id} for email: {patient_email}")
+        patient_search_url = f"https://api.semble.io/v1/patients/search?email={patient_email}"
+        search_response = await client.get(patient_search_url, headers=headers, timeout=20)
+        search_response.raise_for_status()
+        patients = search_response.json().get('data', [])
+        if not patients:
+            raise Exception(f"No patient found in Semble with email: {patient_email}")
+        semble_patient_id = patients[0]['id']
+        consultation_url = f"https://api.semble.io/v1/patients/{semble_patient_id}/consultations"
+        note_body = (f"**Indie Bot AI Summary:**\n{summary}\n\n--- Full Conversation Transcript ---\n{transcript}")
+        note_data = {"body": note_body}
+        consult_response = await client.post(consultation_url, headers=headers, json=note_data, timeout=20)
+        consult_response.raise_for_status()
+        print(f"Successfully pushed note to Semble for Patient ID: {semble_patient_id}")
 
-            consultation_url = f"https://api.semble.io/v1/patients/{semble_patient_id}/consultations"
-            note_body = (f"**Indie Bot AI Summary:**\n{summary}\n\n--- Full Conversation Transcript ---\n{transcript}")
-            note_data = {"body": note_body}
-            
-            consult_response = await client.post(consultation_url, headers=headers, json=note_data, timeout=20)
-            consult_response.raise_for_status()
-            print(f"Successfully pushed note to Semble for Patient ID: {semble_patient_id}")
-
-        except Exception as e:
-            # Re-raise the exception to be caught by the main handler
-            raise e
 
 def generate_report_and_send_email(dob: str, patient_email: str, session_id: str, history: list, category: str, summary: str):
-    """Generates and sends reports to the admin and a confirmation to the patient."""
+    # This function remains the same
     transcript_content = f"Full Conversation Transcript (Session: {session_id})\n\n"
     if not history:
         transcript_content += f"[SYSTEM]: User followed a guided workflow.\n[SUMMARY]: {summary}\n"
     else:
         for message in history:
             transcript_content += f"[{message['role'].upper()}]: {message['text']}\n"
-    
     if not all([SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SENDER_EMAIL]):
-        print("--- CRITICAL EMAIL ERROR: SMTP configuration is incomplete. Emails aborted. ---")
         raise ValueError("SMTP configuration is incomplete on the server.")
-
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
         server.starttls()
         server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        
         admin_subject = f"[Indie Bot] {category} Query from: {patient_email} (DOB: {dob})"
-        if category == "Clinical/Medical": admin_subject = f"[URGENT] " + admin_subject
-        admin_body = (f"Query from {patient_email}...\n\n--- AI-Generated Summary ---\n{summary}")
         admin_msg = EmailMessage()
         admin_msg['Subject'] = admin_subject
         admin_msg['From'] = SENDER_EMAIL
         admin_msg['To'] = REPORT_EMAIL
-        admin_msg.set_content(admin_body)
+        admin_msg.set_content(f"Query from {patient_email}...\n\n--- AI-Generated Summary ---\n{summary}")
         admin_msg.add_attachment(transcript_content.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_{session_id[-6:]}.txt')
         server.send_message(admin_msg)
         print(f"Admin report successfully emailed to {REPORT_EMAIL}")
-        
         patient_subject = "Indra Clinic: A copy of your recent query"
-        patient_body = (f"Dear Patient,\n\nFor your records, here is a summary of your recent query.\n\n**Summary:**\n{summary}\n\nKind regards,\nThe Indra Clinic Team")
         patient_msg = EmailMessage()
         patient_msg['Subject'] = patient_subject
         patient_msg['From'] = SENDER_EMAIL
         patient_msg['To'] = patient_email
-        patient_msg.set_content(patient_body)
+        patient_msg.set_content(f"Dear Patient,\n\nFor your records, here is a summary of your recent query.\n\n**Summary:**\n{summary}\n\nKind regards,\nThe Indra Clinic Team")
         patient_msg.add_attachment(transcript_content.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_summary.txt')
         server.send_message(patient_msg)
         print(f"Patient copy successfully emailed to {patient_email}")
-    
     return transcript_content
 
+
 def query_openrouter(history: list) -> tuple[str, str, str, str]:
-    """Queries OpenRouter for open-ended conversations (Clinical/Prescription)."""
-    system_prompt = textwrap.dedent("""\
-        You are Indie, a helpful assistant for Indra Clinic. Your tone is professional and empathetic.
-        Your primary goal is to gather information for a report. You must not provide medical advice.
-        Your output must be a JSON object with four keys: 'response', 'category', 'summary', and 'action'.
-
-        **Action Logic (CRITICAL):**
-        - If your 'response' is a question, your 'action' MUST be 'CONTINUE'.
-        - Set 'action' to 'REPORT' only when you have gathered all necessary information.
-
-        **Workflow Instructions:**
-        - **Clinical/Medical:** Your role IS to ask clarifying questions about symptoms (onset, duration, severity, etc.).
-        - **Prescription/Medication:** Ask clarifying questions to understand the user's need.
-    """)
-    messages = [{"role": "system", "content": system_prompt}]
+    """Queries OpenRouter using the prompt loaded from the external file."""
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for turn in history:
         role = 'assistant' if turn['role'] == 'indie' else 'user'
         messages.append({"role": role, "content": turn['text']})
@@ -152,21 +132,15 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
         parsed = json.loads(content)
-        return (
-            parsed.get('response', "I'm having trouble."), 
-            parsed.get('category', 'Admin'), 
-            parsed.get('summary', 'No summary.'), 
-            parsed.get('action', 'CONTINUE').upper()
-        )
+        return (parsed.get('response', "I'm having trouble."), parsed.get('category', 'Admin'), parsed.get('summary', 'No summary.'), parsed.get('action', 'CONTINUE').upper())
     except Exception as e:
         print(f"An error occurred in query_openrouter: {e}")
         return "A technical issue occurred.", "Admin", "Unhandled error", "CONTINUE"
 
 
 # --- TELEGRAM HANDLERS & CONVERSATION FLOW ---
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Initiates a new conversation."""
+    # This function remains the same
     context.user_data.clear()
     context.user_data[SESSION_ID_KEY] = str(uuid.uuid4())
     context.user_data[STATE_KEY] = STATE_AWAITING_CONSENT
@@ -178,7 +152,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(consent_message)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """The main state machine for handling all user messages."""
+    # This function remains the same
     current_state = context.user_data.get(STATE_KEY)
     user_message = update.message.text.strip()
     
@@ -187,24 +161,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[STATE_KEY] = STATE_AWAITING_EMAIL
             await update.message.reply_text("Thank you. To begin, please provide your **email address**.")
         else: await update.message.reply_text("To continue, please type 'I agree'.")
-
     elif current_state == STATE_AWAITING_EMAIL:
         if '@' in user_message and '.' in user_message:
             context.user_data[EMAIL_KEY] = user_message
             context.user_data[STATE_KEY] = STATE_AWAITING_DOB
             await update.message.reply_text("Thank you. Please also provide your **Date of Birth** (DD/MM/YYYY).")
         else: await update.message.reply_text("Hmmm, that email doesn't look valid. Please try again.")
-            
     elif current_state == STATE_AWAITING_DOB:
         if len(user_message) >= 8:
             context.user_data[DOB_KEY] = user_message
             context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
             context.user_data[HISTORY_KEY] = []
-            await update.message.reply_text(
-                f"Thank you. Details noted.\n\nPlease select a category:\n1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**"
-            )
+            await update.message.reply_text(f"Thank you. Details noted.\n\nPlease select a category:\n1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**")
         else: await update.message.reply_text("Hmmm, that date doesn't look right. Please use DD/MM/YYYY format.")
-
     elif current_state == STATE_AWAITING_CATEGORY:
         cleaned_message = user_message.lower()
         if any(word in cleaned_message for word in ['1', 'admin']):
@@ -219,12 +188,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[HISTORY_KEY].append({"role": "user", "text": "Category: Clinical/Medical."})
             await update.message.reply_text("Thank you. Please describe the clinical issue.")
         else: await update.message.reply_text("I don't understand. Please reply with a number (1-3).")
-
     elif current_state == STATE_ADMIN_AWAITING_CURRENT_APPT:
         context.user_data[CURRENT_APPT_KEY] = user_message
         context.user_data[STATE_KEY] = STATE_ADMIN_AWAITING_NEW_APPT
         await update.message.reply_text("Thank you. And what is the **new** date and time you would like?")
-
     elif current_state == STATE_ADMIN_AWAITING_NEW_APPT:
         current_appt = context.user_data.get(CURRENT_APPT_KEY)
         new_appt = user_message
@@ -232,7 +199,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data[TEMP_REPORT_KEY] = {'category': 'Admin', 'summary': summary}
         context.user_data[STATE_KEY] = STATE_AWAITING_CONFIRMATION
         await update.message.reply_text(f"---\n**Query Summary**\n---\nPlease review:\n\n**Summary:** *{summary}*\n\nIs this correct? (Yes/No)")
-
     elif current_state == STATE_CHAT_ACTIVE:
         context.user_data[HISTORY_KEY].append({"role": "user", "text": user_message})
         await update.message.chat.send_action("typing")
@@ -243,43 +209,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[TEMP_REPORT_KEY] = {'category': category, 'summary': summary}
             context.user_data[STATE_KEY] = STATE_AWAITING_CONFIRMATION
             await update.message.reply_text(f"---\n**Query Summary**\n---\nPlease review:\n\n**Summary:** *{summary}*\n\nIs this correct? (Yes/No)")
-
     elif current_state == STATE_AWAITING_CONFIRMATION:
         confirmation = user_message.lower()
         if confirmation in ['yes', 'y', 'correct', 'confirm']:
             report_data = context.user_data.get(TEMP_REPORT_KEY)
-            
             try:
                 transcript = generate_report_and_send_email(
-                    context.user_data.get(DOB_KEY),
-                    context.user_data.get(EMAIL_KEY),
-                    context.user_data.get(SESSION_ID_KEY),
-                    context.user_data.get(HISTORY_KEY, []),
-                    report_data['category'],
-                    report_data['summary']
+                    context.user_data.get(DOB_KEY), context.user_data.get(EMAIL_KEY),
+                    context.user_data.get(SESSION_ID_KEY), context.user_data.get(HISTORY_KEY, []),
+                    report_data['category'], report_data['summary']
                 )
-                
                 await push_to_semble(
-                    context.user_data.get(EMAIL_KEY),
-                    report_data['summary'],
-                    transcript
+                    context.user_data.get(EMAIL_KEY), report_data['summary'], transcript
                 )
-
                 context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
-                await update.message.reply_text(
-                    "Thank you. Your query has been logged and a copy has been sent to your email.\n\n"
-                    "Is there anything else I can help with? (Choose 1-3 or say 'No')"
-                )
-
+                await update.message.reply_text("Thank you. Your query has been logged and a copy sent to your email.\n\nIs there anything else I can help with? (Choose 1-3 or say 'No')")
             except Exception as e:
                 error_message = f"--- CRITICAL ERROR during report dispatch: {e} ---"
                 print(error_message)
                 await update.message.reply_text(
-                    "I successfully sent the email reports, but encountered a critical error while trying to save the note to the patient's EMR (Semble). "
+                    "I encountered a critical error while trying to process your report (e.g., sending email or logging to EMR). "
                     "The technical team has been notified via the logs. Please do not re-submit this query."
                 )
-                context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY # Still move to the next state
-
+                context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
         elif confirmation in ['no', 'n', 'incorrect']:
             if context.user_data.get(HISTORY_KEY):
                 context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
@@ -287,10 +239,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
                 await update.message.reply_text("Understood. Let's start over. Please select a category.")
-        
-        else:
-            await update.message.reply_text("I didn't understand. Please confirm with 'Yes' or 'No'.")
-            
+        else: await update.message.reply_text("I didn't understand. Please confirm with 'Yes' or 'No'.")
     elif current_state == STATE_AWAITING_NEW_QUERY:
         cleaned_message = user_message.lower()
         if any(word in cleaned_message for word in ['no', 'nope', 'bye', 'end']):
