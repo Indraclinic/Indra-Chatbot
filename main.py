@@ -49,7 +49,7 @@ STATE_ADMIN_AWAITING_NEW_APPT = 'admin_awaiting_new_appt'
 WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
 
 
-# --- MODIFICATION --- Using the correct createFreeTextRecord mutation
+# --- MODIFICATION --- Using the correct createFreeTextRecord mutation with the correct arguments
 async def push_to_semble(patient_email: str, category: str, summary: str, transcript: str):
     """Finds a patient by email using GraphQL, then pushes a new FreeTextRecord."""
     if not SEMBLE_API_KEY:
@@ -68,27 +68,24 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
     
     async with httpx.AsyncClient() as client:
         try:
-            # Step 1: Find the patient by their email address (this part is working)
+            # Step 1: Find the patient by their email address
             print(f"Searching for patient with email: {patient_email} via GraphQL...")
             find_payload = {"query": find_patient_query, "variables": {"search": patient_email}}
             search_response = await client.post(SEMBLE_GRAPHQL_URL, headers=headers, json=find_payload, timeout=20)
             search_response.raise_for_status()
             
             response_data = search_response.json()
-            if response_data.get("errors"):
-                raise Exception(f"GraphQL error during patient search: {response_data['errors']}")
-
+            if response_data.get("errors"): raise Exception(f"GraphQL error during patient search: {response_data['errors']}")
             patients = response_data.get('data', {}).get('patients', {}).get('data', [])
-            if not patients:
-                raise Exception(f"No patient found in Semble with email: {patient_email}")
+            if not patients: raise Exception(f"No patient found in Semble with email: {patient_email}")
             
             semble_patient_id = patients[0]['id']
             print(f"Found Semble Patient ID: {semble_patient_id}")
 
-            # Step 2: Create the FreeTextRecord using the correct mutation based on your findings
+            # Step 2: Create the FreeTextRecord using the correct mutation and argument structure
             create_record_mutation = """
-                mutation CreateFreeTextRecord($patientId: ID!, $question: String!, $answer: String!) {
-                    createFreeTextRecord(patientId: $patientId, input: {question: $question, answer: $answer}) {
+                mutation CreateRecord($recordData: CreateFreeTextRecordDataInput!) {
+                    createFreeTextRecord(recordData: $recordData) {
                         data { id }
                         error
                     }
@@ -96,19 +93,22 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
             """
             note_question = f"Indie Bot Query: {category}"
             note_answer = (f"**AI Summary:**\n{summary}\n\n--- Full Conversation Transcript ---\n{transcript}")
+            
             mutation_variables = {
-                "patientId": semble_patient_id,
-                "question": note_question,
-                "answer": note_answer
+                "recordData": {
+                    "patientId": semble_patient_id,
+                    "question": note_question,
+                    "answer": note_answer
+                }
             }
             
-            consult_payload = {"query": create_record_mutation, "variables": mutation_variables}
-            consult_response = await client.post(SEMBLE_GRAPHQL_URL, headers=headers, json=consult_payload, timeout=20)
-            consult_response.raise_for_status()
+            record_payload = {"query": create_record_mutation, "variables": mutation_variables}
+            record_response = await client.post(SEMBLE_GRAPHQL_URL, headers=headers, json=record_payload, timeout=20)
+            record_response.raise_for_status()
 
-            consult_data = consult_response.json()
-            if consult_data.get("errors") or (consult_data.get("data", {}).get("createFreeTextRecord") or {}).get("error"):
-                 raise Exception(f"GraphQL error during record creation: {consult_data}")
+            record_data = record_response.json()
+            if record_data.get("errors") or (record_data.get("data", {}).get("createFreeTextRecord") or {}).get("error"):
+                 raise Exception(f"GraphQL error during record creation: {record_data}")
 
             print(f"Successfully pushed FreeTextRecord to Semble for Patient ID: {semble_patient_id}")
 
@@ -155,17 +155,15 @@ def generate_report_and_send_email(dob: str, patient_email: str, session_id: str
 
 # --- AI / OPENROUTER FUNCTIONS ---
 def query_openrouter(history: list) -> tuple[str, str, str, str]:
-    # This function is unchanged, using the external system_prompt.txt file
-    # (For clarity, the prompt text is included here but should be in your file)
+    # This function uses an external system_prompt.txt file
+    # For clarity, a simplified version of the prompt is included here
     system_prompt = textwrap.dedent("""\
         You are Indie, a helpful assistant for Indra Clinic. Your tone is professional and empathetic.
         Your primary goal is to gather information for a report. You must not provide medical advice.
         Your output must be a JSON object with four keys: 'response', 'category', 'summary', and 'action'.
-
         **Action Logic (CRITICAL):**
         - If your 'response' is a question, your 'action' MUST be 'CONTINUE'.
         - Set 'action' to 'REPORT' only when you have gathered all necessary information.
-
         **Workflow Instructions:**
         - **Clinical/Medical:** Your role IS to ask clarifying questions about symptoms (onset, duration, severity, etc.).
         - **Prescription/Medication:** Ask clarifying questions to understand the user's need.
