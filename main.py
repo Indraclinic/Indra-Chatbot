@@ -49,23 +49,19 @@ STATE_ADMIN_AWAITING_NEW_APPT = 'admin_awaiting_new_appt'
 WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
 
 
-# --- MODIFICATION --- Rewrote Semble push to use GraphQL
-async def push_to_semble(patient_email: str, summary: str, transcript: str):
-    """Finds a patient by email using GraphQL, then pushes a new consultation note."""
+# --- MODIFICATION --- Rewrote Semble push to use the correct GraphQL mutation
+async def push_to_semble(patient_email: str, category: str, summary: str, transcript: str):
+    """Finds a patient by email using GraphQL, then pushes a new FreeTextRecord."""
     if not SEMBLE_API_KEY:
-        print("--- SEMBLE ERROR: SEMBLE_API_KEY environment variable not set. EMR push aborted. ---")
         raise ValueError("Semble API Key is not configured on the server.")
 
     SEMBLE_GRAPHQL_URL = "https://open.semble.io/graphql"
     headers = {"x-token": SEMBLE_API_KEY, "Content-Type": "application/json"}
     
-    # GraphQL query to find a patient by email, based on the schema you provided
     find_patient_query = """
       query FindPatientByEmail($search: String!) {
         patients(search: $search) {
-          data {
-            id
-          }
+          data { id }
         }
       }
     """
@@ -89,37 +85,231 @@ async def push_to_semble(patient_email: str, summary: str, transcript: str):
             semble_patient_id = patients[0]['id']
             print(f"Found Semble Patient ID: {semble_patient_id}")
 
-            # Step 2: Create the consultation note mutation
-            # NOTE: The exact mutation for creating a consultation must be verified in Semble's docs.
-            # This is a plausible structure based on the 'addPatientLabel' example.
-            create_consultation_mutation = """
-                mutation CreateConsultation($patientId: ID!, $body: String!) {
-                    createConsultation(patientId: $patientId, input: {body: $body}) {
-                        data {
-                            id
-                        }
+            # Step 2: Create the FreeTextRecord mutation
+            create_record_mutation = """
+                mutation CreateFreeTextRecord($patientId: ID!, $question: String!, $answer: String!) {
+                    createFreeTextRecord(patientId: $patientId, input: {question: $question, answer: $answer}) {
+                        data { id }
                         error
                     }
                 }
             """
-            note_body = (f"**Indie Bot AI Summary:**\n{summary}\n\n--- Full Conversation Transcript ---\n{transcript}")
-            mutation_variables = {"patientId": semble_patient_id, "body": note_body}
+            note_question = f"Indie Bot Query: {category}"
+            note_answer = (f"**AI Summary:**\n{summary}\n\n--- Full Conversation Transcript ---\n{transcript}")
+            mutation_variables = {
+                "patientId": semble_patient_id,
+                "question": note_question,
+                "answer": note_answer
+            }
             
-            consult_payload = {"query": create_consultation_mutation, "variables": mutation_variables}
+            consult_payload = {"query": create_record_mutation, "variables": mutation_variables}
             consult_response = await client.post(SEMBLE_GRAPHQL_URL, headers=headers, json=consult_payload, timeout=20)
             consult_response.raise_for_status()
 
             consult_data = consult_response.json()
-            if consult_data.get("errors") or (consult_data.get("data", {}).get("createConsultation") or {}).get("error"):
-                 raise Exception(f"GraphQL error during consultation creation: {consult_data}")
+            if consult_data.get("errors") or (consult_data.get("data", {}).get("createFreeTextRecord") or {}).get("error"):
+                 raise Exception(f"GraphQL error during record creation: {consult_data}")
 
-            print(f"Successfully pushed note to Semble for Patient ID: {semble_patient_id}")
+            print(f"Successfully pushed FreeTextRecord to Semble for Patient ID: {semble_patient_id}")
 
         except Exception as e:
-            # Re-raise the exception so it gets caught by the "loud failure" block
             raise e
 
 # --- REPORTING AND INTEGRATION FUNCTIONS ---
+def generate_report_and_send_email(dob: str, patient_email: str, session_id: str, history: list, category: str, summary: str):
+    transcript_content = f"Full Conversation Transcript (Session: {session_id})\n\n"
+    if not history:
+        transcript_content += f"[SYSTEM]: User followed a guided workflow.\n[SUMMARY]: {summary}\n"
+    else:
+        for message in history:
+            transcript_content += f"[{message['role'].upper()}]: {message['text']}\n"
+    
+    if not all([SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SENDER_EMAIL]):
+        raise ValueError("SMTP configuration is incomplete on the server.")
+
+    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        
+        admin_subject = f"[Indie Bot] {category} Query from: {patient_email} (DOB: {dob})"
+        admin_msg = EmailMessage()
+        # ... (rest of email sending logic is unchanged)
+    
+    return transcript_content # This function must return the transcript for Semble
+
+# --- AI / OPENROUTER FUNCTIONS ---
+def query_openrouter(history: list) -> tuple[str, str, str, str]:
+    # This function is unchanged
+    return "Example response", "Admin", "Example summary", "CONTINUE" # Placeholder for brevity
+
+# --- TELEGRAM HANDLERS & CONVERSATION FLOW ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # This function is unchanged
+    await update.message.reply_text("👋 Welcome to Indra Clinic!")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # This function contains the main change in the AWAITING_CONFIRMATION state
+    current_state = context.user_data.get(STATE_KEY)
+    user_message = update.message.text.strip()
+    
+    # ... (states from AWAITING_CONSENT to CHAT_ACTIVE are unchanged) ...
+    
+    if current_state == STATE_AWAITING_CONFIRMATION:
+        confirmation = user_message.lower()
+        if confirmation in ['yes', 'y', 'correct', 'confirm']:
+            report_data = context.user_data.get(TEMP_REPORT_KEY)
+            
+            try:
+                transcript = generate_report_and_send_email(
+                    context.user_data.get(DOB_KEY),
+                    context.user_data.get(EMAIL_KEY),
+                    context.user_data.get(SESSION_ID_KEY),
+                    context.user_data.get(HISTORY_KEY, []),
+                    report_data['category'],
+                    report_data['summary']
+                )
+                
+                await push_to_semble(
+                    context.user_data.get(EMAIL_KEY),
+                    report_data['category'],
+                    report_data['summary'],
+                    transcript
+                )
+
+                context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
+                await update.message.reply_text(
+                    "Thank you for confirming. Your query has been successfully logged and a copy has been sent to your email.\n\n"
+                    "Is there anything else I can help with?"
+                )
+
+            except Exception as e:
+                error_message_for_logs = f"--- CRITICAL ERROR during report dispatch: {e} ---"
+                print(error_message_for_logs)
+                error_message_for_user = (
+                    "A critical error occurred while finalising your report. "
+                    "The technical team has been notified via the logs.\n\n"
+                    f"**Error Details:** `{e}`"
+                )
+                await update.message.reply_text(error_message_for_user)
+                context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
+        
+        # ... (rest of the function is unchanged)
+    
+# ... (rest of the file is unchanged)
+
+# NOTE: I have omitted the full unchanged code for brevity. Below is the complete file.
+
+# --- Complete main.py file ---
+import os
+import sys
+import time
+import uuid
+import asyncio
+import textwrap
+import httpx
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.error import InvalidToken, Conflict
+import requests
+import json
+import smtplib
+from email.message import EmailMessage
+
+# --- ENVIRONMENT VARIABLE CONFIGURATION ---
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+SEMBLE_API_KEY = os.getenv("SEMBLE_API_KEY")
+REPORT_EMAIL = os.getenv("REPORT_EMAIL", "drT@indra.clinic")
+SENDER_EMAIL = os.getenv("SENDER_EMAIL")
+SMTP_SERVER = os.getenv("SMTP_SERVER")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+
+if not TELEGRAM_TOKEN or not OPENROUTER_API_KEY:
+    raise ValueError("FATAL: Critical environment variables are not set.")
+
+# --- STATE AND DATA KEYS ---
+STATE_KEY = 'conversation_state'
+HISTORY_KEY = 'chat_history'
+TEMP_REPORT_KEY = 'temp_report'
+DOB_KEY = 'date_of_birth'
+EMAIL_KEY = 'patient_email'
+SESSION_ID_KEY = 'session_id'
+CURRENT_APPT_KEY = 'current_appointment'
+
+# --- CONVERSATION STATES ---
+STATE_AWAITING_CONSENT = 'awaiting_consent'
+STATE_AWAITING_EMAIL = 'awaiting_email'
+STATE_AWAITING_DOB = 'awaiting_dob'
+STATE_AWAITING_CATEGORY = 'awaiting_category'
+STATE_CHAT_ACTIVE = 'chat_active'
+STATE_AWAITING_CONFIRMATION = 'awaiting_confirmation'
+STATE_AWAITING_NEW_QUERY = 'awaiting_new_query'
+STATE_ADMIN_AWAITING_CURRENT_APPT = 'admin_awaiting_current_appt'
+STATE_ADMIN_AWAITING_NEW_APPT = 'admin_awaiting_new_appt'
+WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
+
+
+async def push_to_semble(patient_email: str, category: str, summary: str, transcript: str):
+    """Finds a patient by email using GraphQL, then pushes a new FreeTextRecord."""
+    if not SEMBLE_API_KEY:
+        raise ValueError("Semble API Key is not configured on the server.")
+
+    SEMBLE_GRAPHQL_URL = "https://open.semble.io/graphql"
+    headers = {"x-token": SEMBLE_API_KEY, "Content-Type": "application/json"}
+    
+    find_patient_query = """
+      query FindPatientByEmail($search: String!) {
+        patients(search: $search) {
+          data { id }
+        }
+      }
+    """
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            print(f"Searching for patient with email: {patient_email} via GraphQL...")
+            find_payload = {"query": find_patient_query, "variables": {"search": patient_email}}
+            search_response = await client.post(SEMBLE_GRAPHQL_URL, headers=headers, json=find_payload, timeout=20)
+            search_response.raise_for_status()
+            
+            response_data = search_response.json()
+            if response_data.get("errors"):
+                raise Exception(f"GraphQL error during patient search: {response_data['errors']}")
+
+            patients = response_data.get('data', {}).get('patients', {}).get('data', [])
+            if not patients:
+                raise Exception(f"No patient found in Semble with email: {patient_email}")
+            
+            semble_patient_id = patients[0]['id']
+            print(f"Found Semble Patient ID: {semble_patient_id}")
+
+            create_record_mutation = """
+                mutation CreateFreeTextRecord($patientId: ID!, $question: String!, $answer: String!) {
+                    createFreeTextRecord(patientId: $patientId, input: {question: $question, answer: $answer}) {
+                        data { id }
+                        error
+                    }
+                }
+            """
+            note_question = f"Indie Bot Query: {category}"
+            note_answer = (f"**AI Summary:**\n{summary}\n\n--- Full Conversation Transcript ---\n{transcript}")
+            mutation_variables = {"patientId": semble_patient_id, "question": note_question, "answer": note_answer}
+            
+            consult_payload = {"query": create_record_mutation, "variables": mutation_variables}
+            consult_response = await client.post(SEMBLE_GRAPHQL_URL, headers=headers, json=consult_payload, timeout=20)
+            consult_response.raise_for_status()
+
+            consult_data = consult_response.json()
+            if consult_data.get("errors") or (consult_data.get("data", {}).get("createFreeTextRecord") or {}).get("error"):
+                 raise Exception(f"GraphQL error during record creation: {consult_data}")
+
+            print(f"Successfully pushed FreeTextRecord to Semble for Patient ID: {semble_patient_id}")
+
+        except Exception as e:
+            raise e
+
 def generate_report_and_send_email(dob: str, patient_email: str, session_id: str, history: list, category: str, summary: str):
     transcript_content = f"Full Conversation Transcript (Session: {session_id})\n\n"
     if not history:
@@ -157,24 +347,14 @@ def generate_report_and_send_email(dob: str, patient_email: str, session_id: str
     
     return transcript_content
 
-# --- AI / OPENROUTER FUNCTIONS ---
-def query_openrouter(history: list) -> tuple[str, str, str, str]:
-    # This function is unchanged
-    system_prompt = "You are a helpful assistant." # Placeholder for brevity, use your full prompt
-    #... (rest of function as before)
-    return "Example response", "Admin", "Example summary", "CONTINUE"
-
-# The full query_openrouter function for completeness:
 def query_openrouter(history: list) -> tuple[str, str, str, str]:
     system_prompt = textwrap.dedent("""\
         You are Indie, a helpful assistant for Indra Clinic. Your tone is professional and empathetic.
         Your primary goal is to gather information for a report. You must not provide medical advice.
         Your output must be a JSON object with four keys: 'response', 'category', 'summary', and 'action'.
-
         **Action Logic (CRITICAL):**
         - If your 'response' is a question, your 'action' MUST be 'CONTINUE'.
         - Set 'action' to 'REPORT' only when you have gathered all necessary information.
-
         **Workflow Instructions:**
         - **Clinical/Medical:** Your role IS to ask clarifying questions about symptoms (onset, duration, severity, etc.).
         - **Prescription/Medication:** Ask clarifying questions to understand the user's need.
@@ -195,10 +375,7 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
         print(f"An error occurred in query_openrouter: {e}")
         return "A technical issue occurred.", "Admin", "Unhandled error", "CONTINUE"
 
-
-# --- TELEGRAM HANDLERS & CONVERSATION FLOW ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # This function is unchanged
     context.user_data.clear()
     context.user_data[SESSION_ID_KEY] = str(uuid.uuid4())
     context.user_data[STATE_KEY] = STATE_AWAITING_CONSENT
@@ -210,7 +387,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(consent_message)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """The main state machine for handling all user messages."""
     current_state = context.user_data.get(STATE_KEY)
     user_message = update.message.text.strip()
     
@@ -279,7 +455,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     report_data['category'], report_data['summary']
                 )
                 await push_to_semble(
-                    context.user_data.get(EMAIL_KEY), report_data['summary'], transcript
+                    context.user_data.get(EMAIL_KEY),
+                    report_data['category'],
+                    report_data['summary'],
+                    transcript
                 )
                 context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
                 await update.message.reply_text("Thank you. Your query has been logged and a copy sent to your email.\n\nIs there anything else I can help with? (Choose 1-3 or say 'No')")
@@ -311,7 +490,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: await start(update, context)
 
 def main():
-    """Initializes and runs the Telegram bot."""
     print("--- Indra Clinic Bot Initializing ---")
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
