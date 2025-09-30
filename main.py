@@ -17,7 +17,7 @@ from email.message import EmailMessage
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 SEMBLE_API_KEY = os.getenv("SEMBLE_API_KEY")
-REPORT_EMAIL = os.getenv("REPORT_EMAIL", "drT@indra.clinic") # --- MODIFICATION --- Simplified to one admin email
+REPORT_EMAIL = os.getenv("REPORT_EMAIL", "drT@indra.clinic")
 SMTP_SERVER = os.getenv("SMTP_SERVER")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME")
@@ -49,16 +49,24 @@ STATE_AWAITING_NEW_QUERY = 'awaiting_new_query'
 WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
 
 
+# --- MODIFICATION --- Corrected the Semble API endpoint URL
 async def push_to_semble(patient_id: str, dob: str, patient_email: str, summary: str, transcript: str):
     """Connects to the Semble API and pushes a new consultation note."""
     if not SEMBLE_API_KEY:
         print("SEMBLE_API_KEY environment variable not set. Skipping EMR push.")
         return
 
-    SEMBLE_API_URL = "https://api.semble.io/v1/consultations"
-    headers = {"Authorization": f"Bearer {SEMBLE_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
+    # According to the docs, the endpoint is /patients/{patientId}/consultations
+    SEMBLE_API_URL = f"https://api.semble.io/v1/patients/{patient_id}/consultations"
+    headers = {
+        "Authorization": f"Bearer {SEMBLE_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
     note_body = (f"**Indie Bot AI Summary:**\n{summary}\n\n--- Full Conversation Transcript ---\n{transcript}")
-    note_data = {"patientId": patient_id, "body": note_body}
+    
+    # The payload only needs the body, as the patient ID is in the URL
+    note_data = {"body": note_body}
     
     async with httpx.AsyncClient() as client:
         try:
@@ -104,7 +112,7 @@ def generate_report_and_send_email(patient_id: str, dob: str, patient_email: str
             admin_msg = EmailMessage()
             admin_msg['Subject'] = admin_subject
             admin_msg['From'] = SMTP_USERNAME
-            admin_msg['To'] = REPORT_EMAIL # --- MODIFICATION --- Sends to the single primary address now
+            admin_msg['To'] = REPORT_EMAIL
             admin_msg.set_content(admin_body)
             admin_msg.add_attachment(transcript_content.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_{patient_id}.txt')
             server.send_message(admin_msg)
@@ -147,7 +155,7 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
 
         **Information Gathering vs. Giving Advice:**
         - **Giving Advice (Forbidden):** Never tell the user what to do about their medical condition. Do not suggest treatments or interpret symptoms.
-        - **Gathering Information (Required):** When a patient mentions a clinical issue (e.g., 'itchy foot', 'headache'), your role IS to ask clarifying questions to understand it. Ask about onset, duration, severity, location, etc. This is essential data collection for the clinical team's report.
+        - **Gathering Information (Required):** When a patient mentions a clinical issue (e.g., 'itchy foot', 'headache'), your role IS to ask clarifying questions to understand it. Ask about onset, duration, severity, location, etc.
     """)
     messages = [{"role": "system", "content": system_prompt}]
     for turn in history:
