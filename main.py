@@ -98,9 +98,10 @@ def generate_report_and_send_email(patient_id: str, dob: str, history: list, cat
 
 def query_openrouter(history: list) -> tuple[str, str, str, str]:
     """
-    Queries OpenRouter with an ANONYMIZED conversation history.
+    Queries OpenRouter with an anonymised conversation history.
     The AI is grounded with information from the patient guidance and consent form.
     """
+    # --- MODIFICATION --- Added stricter rules for the AI's action logic.
     system_prompt = textwrap.dedent("""\
         You are Indie, a helpful assistant for Indra Clinic, a UK-based medical cannabis clinic.
         Your tone must be professional, empathetic, and clear. Use appropriate medical terminology but avoid complex jargon.
@@ -109,10 +110,14 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
         **Primary Goal: Information Gathering for Reports**
         Your main purpose is to gather enough information from the patient to create a useful report for the clinical, admin, or prescription teams.
 
-        **Information Gathering vs. Giving Advice (CRITICAL):**
+        **Action Logic (CRITICAL):**
+        - If your 'response' to the user is a question to gather more details, your 'action' MUST be 'CONTINUE'.
+        - Only set 'action' to 'REPORT' when you have gathered all necessary information and are providing a final statement, not a question.
+
+        **Information Gathering vs. Giving Advice:**
         It is vital to distinguish between gathering information and giving advice.
         - **Giving Advice (Forbidden):** Never tell the user what to do about their medical condition. Do not suggest treatments or interpret symptoms.
-        - **Gathering Information (Required):** When a patient mentions a clinical issue (e.g., 'itchy foot', 'headache', 'trouble sleeping'), your role IS to ask clarifying questions to understand it. Ask about onset, duration, severity, location, etc. This is essential data collection for the clinical team's report. Once you have enough detail, set your 'action' to 'REPORT'.
+        - **Gathering Information (Required):** When a patient mentions a clinical issue (e.g., 'itchy foot', 'headache'), your role IS to ask clarifying questions to understand it. Ask about onset, duration, severity, location, etc. This is essential data collection for the clinical team's report.
 
         **Answering General Questions:**
         You can answer general questions based *only* on the official clinic guidance below. Frame answers as 'According to the patient guidance leaflet...'. If guidance doesn't cover a question, say you don't have the information and advise contacting the clinic.
@@ -194,7 +199,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "**Your Privacy at Indra Clinic**\n"
         "To use this service, we need to verify your identity and record this conversation in your patient file.\n\n"
         "• **For Verification:** We use your Patient ID and Date of Birth only to securely locate your patient record.\n"
-        "• **For AI Assistance:** To understand your request, your anonymized conversation is processed by a third-party AI service. Your personal details are never shared with the AI.\n"
+        "• **For AI Assistance:** To understand your request, your anonymised conversation is processed by a third-party AI service. Your personal details are never shared with the AI.\n"
         "• **For Your Medical Record:** A transcript of this chat will be saved to your official file in our secure Semble EMR system.\n\n"
         "To confirm you have read this and wish to proceed, please type **'I agree'**."
     )
@@ -226,7 +231,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
             context.user_data[HISTORY_KEY] = []
             
-            # --- MODIFICATION --- Corrected the inaccurate "record located" message.
             await update.message.reply_text(
                 f"Thank you. I've securely noted those details for our report.\n\n"
                 "To ensure your query is directed to the appropriate team, please select the category that best describes your request:\n\n"
@@ -249,7 +253,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if matched_category:
             context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
             context.user_data[HISTORY_KEY].append({"role": "user", "text": f"The user selected the '{matched_category}' category for their query."})
-            await update.message.reply_text(f"Thank you. I've categorized your query under **{matched_category}**. Please describe the issue in detail now.")
+            
+            if matched_category == 'Clinical/Medical':
+                await update.message.reply_text(
+                    f"Thank you, I've noted this as a **Clinical/Medical** query. "
+                    "To create a detailed report for the team, please start by describing the symptoms or issue you are experiencing."
+                )
+            else:
+                await update.message.reply_text(
+                    f"Thank you. I've categorized your query under **{matched_category}**. Please describe your request in detail now."
+                )
         else:
             await update.message.reply_text("Hmmm, I don't quite understand that choice. Please reply with the number or name of the category that best fits your query.")
 
