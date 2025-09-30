@@ -1,3 +1,5 @@
+# Version 1.0 of the bot
+
 import os
 import sys
 import signal
