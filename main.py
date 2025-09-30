@@ -4,7 +4,7 @@ import time
 import uuid
 import asyncio
 import textwrap
-import httpx # --- MODIFICATION --- Added new library for API calls
+import httpx
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from telegram.error import InvalidToken, Conflict
@@ -16,8 +16,8 @@ from email.message import EmailMessage
 # --- ENVIRONMENT VARIABLE CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-SEMBLE_API_KEY = os.getenv("SEMBLE_API_KEY") # --- MODIFICATION ---
-REPORT_EMAIL = os.getenv("REPORT_EMAIL", "drT@indra.clinic")
+SEMBLE_API_KEY = os.getenv("SEMBLE_API_KEY")
+REPORT_EMAIL = os.getenv("REPORT_EMAIL", "drT@indra.clinic") # --- MODIFICATION --- Simplified to one admin email
 SMTP_SERVER = os.getenv("SMTP_SERVER")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME")
@@ -28,16 +28,20 @@ if not TELEGRAM_TOKEN:
 if not OPENROUTER_API_KEY:
     raise ValueError("FATAL: OPENROUTER_API_KEY environment variable not set.")
 
-# ... (State and Data Keys remain the same) ...
+# --- STATE AND DATA KEYS ---
 STATE_KEY = 'conversation_state'
 HISTORY_KEY = 'chat_history'
 TEMP_REPORT_KEY = 'temp_report'
 PATIENT_ID_KEY = 'patient_id'
 DOB_KEY = 'date_of_birth'
+EMAIL_KEY = 'patient_email'
 SESSION_ID_KEY = 'session_id'
+
+# --- CONVERSATION STATES ---
 STATE_AWAITING_CONSENT = 'awaiting_consent'
 STATE_AWAITING_PATIENT_ID = 'awaiting_patient_id'
 STATE_AWAITING_DOB = 'awaiting_dob'
+STATE_AWAITING_EMAIL = 'awaiting_email'
 STATE_AWAITING_CATEGORY = 'awaiting_category'
 STATE_CHAT_ACTIVE = 'chat_active'
 STATE_AWAITING_CONFIRMATION = 'awaiting_confirmation'
@@ -45,62 +49,30 @@ STATE_AWAITING_NEW_QUERY = 'awaiting_new_query'
 WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
 
 
-# --- MODIFICATION --- New function to push notes to Semble API
-async def push_to_semble(patient_id: str, summary: str, transcript: str):
+async def push_to_semble(patient_id: str, dob: str, patient_email: str, summary: str, transcript: str):
     """Connects to the Semble API and pushes a new consultation note."""
     if not SEMBLE_API_KEY:
         print("SEMBLE_API_KEY environment variable not set. Skipping EMR push.")
         return
 
     SEMBLE_API_URL = "https://api.semble.io/v1/consultations"
-    headers = {
-        "Authorization": f"Bearer {SEMBLE_API_KEY}",
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-
-    # Structure the note content. The 'body' can be formatted with Markdown.
-    note_body = (
-        f"**Indie Bot AI Summary:**\n{summary}\n\n"
-        f"--- Full Conversation Transcript ---\n{transcript}"
-    )
+    headers = {"Authorization": f"Bearer {SEMBLE_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
+    note_body = (f"**Indie Bot AI Summary:**\n{summary}\n\n--- Full Conversation Transcript ---\n{transcript}")
+    note_data = {"patientId": patient_id, "body": note_body}
     
-    # Structure the JSON payload according to Semble's documentation
-    note_data = {
-        "patientId": patient_id,
-        "body": note_body
-    }
-
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(SEMBLE_API_URL, headers=headers, json=note_data, timeout=20)
-            response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+            response.raise_for_status()
             print(f"Successfully pushed note to Semble for Patient ID: {patient_id}")
         except httpx.HTTPStatusError as e:
-            # Log specific API errors
             print(f"ERROR: Failed to push note to Semble. Status: {e.response.status_code}, Response: {e.response.text}")
         except Exception as e:
-            # Log other errors like network issues
             print(f"ERROR: An unexpected error occurred when pushing to Semble: {e}")
 
 # --- REPORTING AND INTEGRATION FUNCTIONS ---
-
-def generate_report_and_send_email(patient_id: str, dob: str, history: list, category: str, summary: str):
-    """
-    Generates a report with summary in the body and a full transcript as a .txt attachment,
-    then sends it to a single clinical email address.
-    """
-    subject = f"[Indie Bot] {category} Query for Patient ID: {patient_id} (DOB: {dob})"
-    if category == "Clinical/Medical":
-        subject = f"[URGENT] " + subject
-
-    email_body = (
-        f"A new query has been logged via the Indra Clinic Bot.\n\n"
-        f"Patient ID: {patient_id}\n"
-        f"Patient DOB: {dob}\n"
-        f"Category: {category}\n\n"
-        f"--- AI-Generated Summary ---\n{summary}"
-    )
+def generate_report_and_send_email(patient_id: str, dob: str, patient_email: str, history: list, category: str, summary: str):
+    """Generates and sends reports to the admin and a confirmation to the patient."""
     
     transcript_content = f"Full Conversation Transcript for Patient ID: {patient_id}\n\n"
     for message in history:
@@ -109,27 +81,59 @@ def generate_report_and_send_email(patient_id: str, dob: str, history: list, cat
     try:
         if not all([SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER]):
             print("Email skipped: SMTP configuration is incomplete.")
-            return
-
-        msg = EmailMessage()
-        msg['Subject'] = subject
-        msg['From'] = SMTP_USERNAME
-        msg['To'] = REPORT_EMAIL
-        msg.set_content(email_body)
-        msg.add_attachment(transcript_content.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_{patient_id}.txt')
+            return transcript_content
 
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.send_message(msg)
-            print(f"Report successfully emailed to {REPORT_EMAIL}")
+            
+            # --- EMAIL 1: To Clinic Staff ---
+            admin_subject = f"[Indie Bot] {category} Query for Patient ID: {patient_id} (DOB: {dob})"
+            if category == "Clinical/Medical":
+                admin_subject = f"[URGENT] " + admin_subject
+            
+            admin_body = (
+                f"A new query has been logged via the Indra Clinic Bot.\n\n"
+                f"Patient ID: {patient_id}\n"
+                f"Patient DOB: {dob}\n"
+                f"Patient Email: {patient_email}\n"
+                f"Category: {category}\n\n"
+                f"--- AI-Generated Summary ---\n{summary}"
+            )
+            
+            admin_msg = EmailMessage()
+            admin_msg['Subject'] = admin_subject
+            admin_msg['From'] = SMTP_USERNAME
+            admin_msg['To'] = REPORT_EMAIL # --- MODIFICATION --- Sends to the single primary address now
+            admin_msg.set_content(admin_body)
+            admin_msg.add_attachment(transcript_content.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_{patient_id}.txt')
+            server.send_message(admin_msg)
+            print(f"Admin report successfully emailed to {REPORT_EMAIL}")
+
+            # --- EMAIL 2: To Patient ---
+            patient_subject = "Indra Clinic: A copy of your recent query"
+            patient_body = (
+                f"Dear Patient,\n\n"
+                f"Thank you for contacting Indra Clinic. For your records, a summary and full transcript of your recent query are attached.\n\n"
+                f"The clinical team will review your submission and be in touch shortly.\n\n"
+                f"**Summary of your query:**\n{summary}\n\n"
+                f"Kind regards,\nThe Indra Clinic Team"
+            )
+            patient_msg = EmailMessage()
+            patient_msg['Subject'] = patient_subject
+            patient_msg['From'] = SMTP_USERNAME
+            patient_msg['To'] = patient_email
+            patient_msg.set_content(patient_body)
+            patient_msg.add_attachment(transcript_content.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_summary.txt')
+            server.send_message(patient_msg)
+            print(f"Patient copy successfully emailed to {patient_email}")
+
     except Exception as e:
         print(f"EMAIL DISPATCH FAILED: {e}")
     
-    return transcript_content # Return the transcript for use by the Semble function
+    return transcript_content
 
-
-# ... (query_openrouter function remains the same) ...
+# --- AI / OPENROUTER FUNCTIONS ---
 def query_openrouter(history: list) -> tuple[str, str, str, str]:
     """Queries OpenRouter with an anonymised conversation history."""
     system_prompt = textwrap.dedent("""\
@@ -142,30 +146,9 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
         - Only set 'action' to 'REPORT' when you have gathered all necessary information and are providing a final statement, not a question.
 
         **Information Gathering vs. Giving Advice:**
-        - **Giving Advice (Forbidden):** Never tell the user what to do about their medical condition.
-        - **Gathering Information (Required):** When a patient mentions a clinical issue (e.g., 'itchy foot'), your role IS to ask clarifying questions to understand it. Ask about onset, duration, severity, etc.
-
-        **Answering General Questions:**
-        You can answer general questions based *only* on the official clinic guidance below. Frame answers as 'According to the patient guidance leaflet...'.
-
-        --- KEY PATIENT CONSENT PRINCIPLES ---
-        - The clinic provides prescriptions but does not dispense medication directly.
-        - A prescription is not guaranteed after a consultation.
-
-        --- OFFICIAL PATIENT GUIDANCE ---
-        1.  **Medication Usage:**
-            - **Flower:** Use in a vaporiser, start at 180°C (max 210°C), wait 5 mins between inhalations.
-            - **Vapes:** One short (2 sec) puff, wait 5 mins before repeating.
-        2.  **Side Effects:**
-            - **Mild (dizzy, sleepy):** Rest and contact the clinic if concerned.
-            - **Severe (chest pain, trouble breathing):** Call 999 or 111 immediately.
-        3.  **Safety:**
-            - **Driving:** Illegal if impaired.
-            - **Alcohol:** Avoid alcohol.
-            - **Travel:** UK only. Check with embassy for international travel.
-        --- END OF GUIDANCE ---
+        - **Giving Advice (Forbidden):** Never tell the user what to do about their medical condition. Do not suggest treatments or interpret symptoms.
+        - **Gathering Information (Required):** When a patient mentions a clinical issue (e.g., 'itchy foot', 'headache'), your role IS to ask clarifying questions to understand it. Ask about onset, duration, severity, location, etc. This is essential data collection for the clinical team's report.
     """)
-
     messages = [{"role": "system", "content": system_prompt}]
     for turn in history:
         role = 'assistant' if turn['role'] == 'indie' else 'user'
@@ -190,7 +173,8 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
         return "A technical issue occurred. Please try your request again.", "Admin", "Unhandled error", "CONTINUE"
 
 
-# ... (start and other handle_message states remain the same) ...
+# --- TELEGRAM HANDLERS & CONVERSATION FLOW ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Initiates a new conversation, clears old data, and asks for consent."""
     context.user_data.clear()
@@ -211,9 +195,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     consent_message = (
         "Before we continue, please read our brief privacy notice:\n\n"
         "**Your Privacy at Indra Clinic**\n"
-        "• **For Verification:** We use your Patient ID and Date of Birth to associate this chat with your patient record.\n"
+        "• **For Verification:** We use your Patient ID, Date of Birth, and email address to securely associate this chat with your patient record.\n"
         "• **For AI Assistance:** Your anonymised conversation is processed by a third-party AI to understand your request.\n"
-        "• **For Your Medical Record:** A summary of this chat will be added to your secure Semble EMR file.\n\n"
+        "• **For Your Medical Record:** A summary of this chat will be added to your secure Semble EMR file.\n"
+        "• **For Your Records:** A copy of the summary and transcript will be emailed to you upon completion.\n\n"
         "To confirm and proceed, please type **'I agree'**."
     )
     await update.message.reply_text(consent_message)
@@ -247,6 +232,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif current_state == STATE_AWAITING_DOB:
         if len(user_message) >= 8:
             context.user_data[DOB_KEY] = user_message
+            context.user_data[STATE_KEY] = STATE_AWAITING_EMAIL
+            await update.message.reply_text("And finally, please provide the **email address** you registered with the clinic.")
+        else:
+            await update.message.reply_text("Hmmm, that date doesn't look right. Please provide it in DD/MM/YYYY format.")
+    
+    elif current_state == STATE_AWAITING_EMAIL:
+        if '@' in user_message and '.' in user_message:
+            context.user_data[EMAIL_KEY] = user_message
             context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
             context.user_data[HISTORY_KEY] = []
             
@@ -258,7 +251,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "3. **Clinical/Medical**"
             )
         else:
-            await update.message.reply_text("Hmmm, that date doesn't look right. Please provide it in DD/MM/YYYY format.")
+            await update.message.reply_text("Hmmm, that email address doesn't seem valid. Please check and try again.")
 
     elif current_state == STATE_AWAITING_CATEGORY:
         cleaned_message = user_message.lower()
@@ -298,10 +291,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if confirmation in ['yes', 'y', 'correct', 'confirm']:
             report_data = context.user_data.get(TEMP_REPORT_KEY)
             
-            # --- MODIFICATION --- Call both the email and Semble functions
             transcript = generate_report_and_send_email(
                 context.user_data.get(PATIENT_ID_KEY),
                 context.user_data.get(DOB_KEY),
+                context.user_data.get(EMAIL_KEY),
                 context.user_data.get(HISTORY_KEY, []),
                 report_data['category'],
                 report_data['summary']
@@ -309,13 +302,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await push_to_semble(
                 context.user_data.get(PATIENT_ID_KEY),
+                context.user_data.get(DOB_KEY),
+                context.user_data.get(EMAIL_KEY),
                 report_data['summary'],
                 transcript
             )
 
             context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
             await update.message.reply_text(
-                "Thank you for confirming. Your query has been logged.\n\n"
+                "Thank you for confirming. Your query has been logged and a copy has been sent to your email address.\n\n"
                 "Is there anything else I can help you with? You can choose a category or type **'No'** to end the chat.\n\n"
                 "1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**"
             )
