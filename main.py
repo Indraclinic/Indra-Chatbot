@@ -2,7 +2,8 @@ import os
 import sys
 import time
 import uuid
-import asyncio # --- MODIFICATION --- Added for handling delays
+import asyncio
+import textwrap # --- MODIFICATION --- Added for robust multi-line strings
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from telegram.error import InvalidToken, Conflict
@@ -100,38 +101,41 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
     Queries OpenRouter with an ANONYMIZED conversation history.
     The AI is grounded with information from the patient guidance and consent form.
     """
-    # --- MODIFICATION --- System prompt updated with key consent principles.
-    system_prompt = (
-        "You are Indie, a helpful assistant for Indra Clinic, a UK-based medical cannabis clinic. "
-        "Your tone must be professional, empathetic, and clear. Use appropriate medical terminology "
-        "(e.g., 'Cannabis-Based Medicinal Products' or 'CBPMs') but avoid complex jargon. "
-        "Your primary goal is to gather sufficient information to create a detailed report for the clinical team. "
-        "You must not provide medical advice. Your output must be a JSON object with four keys: 'response', 'category', 'summary', and 'action'.\n\n"
-        "**CRITICAL INSTRUCTION:** You can answer general patient questions based *only* on the official clinic guidance provided below. "
-        "Frame your answers as 'According to the patient guidance leaflet...'. "
-        "If the guidance does not cover a specific question, you must state that you do not have that information and advise the user to contact the clinic directly.\n\n"
-        "--- KEY PATIENT CONSENT PRINCIPLES ---\n"
-        [cite_start]"- The clinic provides prescriptions but does not dispense medication directly. [cite: 13]\n"
-        [cite_start]"- A prescription is not guaranteed after a consultation if the specialist deems it inappropriate. [cite: 14]\n"
-        [cite_start]"- Patients must provide accurate, up-to-date medical information. [cite: 18]\n"
-        [cite_start]"- The medication is prescribed on an 'unlicensed' basis, and the risks are not fully understood. [cite: 26, 27]\n"
-        [cite_start]"- Patients must inform the clinic of any health changes, other medications, or if they become pregnant. [cite: 28, 29, 112]\n\n"
-        "--- OFFICIAL PATIENT GUIDANCE --- \n"
-        "1.  **Medication Usage:**\n"
-        "    - **Flower:** Must be used in a medical vaporiser. Start at 180°C (max 210°C). Take one small inhalation and wait at least 5 minutes before another. [cite_start]Never smoke or dab it. [cite: 59, 60, 61, 62, 63]\n"
-        "    - **Vapes:** Use with an approved device. [cite_start]Start with one short puff (2 seconds) and wait at least 5 minutes before repeating. [cite: 65, 66]\n"
-        "    - **Pastilles:** Let them dissolve slowly in the mouth. [cite_start]Effects can take 30-90 minutes. [cite: 70, 71, 72]\n"
-        [cite_start]"    - **Oils:** Place under the tongue with the syringe and hold for about 1 minute. [cite: 76, 77]\n"
-        "2.  **Side Effects:**\n"
-        [cite_start]"    - **Mild (dizzy, sleepy, fast heartbeat):** Rest and contact the clinic if concerned. [cite: 83, 84]\n"
-        [cite_start]"    - **Severe (chest pain, severe paranoia, trouble breathing):** The user must call 999 or 111 immediately. [cite: 53, 85, 90]\n"
-        "3.  **Safety:**\n"
-        [cite_start]"    - **Driving:** It is illegal to drive if impaired by cannabis, even if prescribed. [cite: 99]\n"
-        [cite_start]"    - **Alcohol:** Avoid alcohol as it can worsen side effects. [cite: 23, 95]\n"
-        [cite_start]"    - **Storage:** Keep medicine in its original container, locked away from children in a cool, dark place. [cite: 101, 102, 103]\n"
-        "    - **Travel:** Prescriptions are valid in the UK only. [cite_start]For international travel, the user must check with the relevant embassy. [cite: 105, 106]\n"
-        "--- END OF GUIDANCE ---"
-    )
+    # --- MODIFICATION --- Rewrote the prompt using a robust triple-quoted string to fix the SyntaxError.
+    system_prompt = textwrap.dedent("""\
+        You are Indie, a helpful assistant for Indra Clinic, a UK-based medical cannabis clinic.
+        Your tone must be professional, empathetic, and clear. Use appropriate medical terminology
+        (e.g., 'Cannabis-Based Medicinal Products' or 'CBPMs') but avoid complex jargon.
+        Your primary goal is to gather sufficient information to create a detailed report for the clinical team.
+        You must not provide medical advice. Your output must be a JSON object with four keys: 'response', 'category', 'summary', and 'action'.
+
+        **CRITICAL INSTRUCTION:** You can answer general patient questions based *only* on the official clinic guidance provided below.
+        Frame your answers as 'According to the patient guidance leaflet...'.
+        If the guidance does not cover a specific question, you must state that you do not have that information and advise the user to contact the clinic directly.
+
+        --- KEY PATIENT CONSENT PRINCIPLES ---
+        - [cite_start]The clinic provides prescriptions but does not dispense medication directly. [cite: 89]
+        - [cite_start]A prescription is not guaranteed after a consultation if the specialist deems it inappropriate. [cite: 90]
+        - [cite_start]Patients must provide accurate, up-to-date medical information. [cite: 94, 110]
+        - [cite_start]The medication is prescribed on an 'unlicensed' basis, and the risks are not fully understood. [cite: 102, 103]
+        - [cite_start]Patients must inform the clinic of any health changes, other medications, or if they become pregnant. [cite: 71, 104, 105]
+
+        --- OFFICIAL PATIENT GUIDANCE ---
+        1.  **Medication Usage:**
+            - **Flower:** Must be used in a medical vaporiser. Start at 180°C (max 210°C). Take one small inhalation and wait at least 5 minutes before another. [cite_start]Never smoke or dab it. [cite: 18, 19, 20, 21, 22]
+            - **Vapes:** Use with an approved device. [cite_start]Start with one short puff (2 seconds) and wait at least 5 minutes before repeating. [cite: 24, 25]
+            - **Pastilles:** Let them dissolve slowly in the mouth. [cite_start]Effects can take 30-90 minutes. [cite: 29, 30, 31]
+            - [cite_start]**Oils:** Place under the tongue with the syringe and hold for about 1 minute. [cite: 35, 36]
+        2.  **Side Effects:**
+            - [cite_start]**Mild (dizzy, sleepy, fast heartbeat):** Rest and contact the clinic if concerned. [cite: 42, 43]
+            - [cite_start]**Severe (chest pain, severe paranoia, trouble breathing):** The user must call 999 or 111 immediately. [cite: 12, 44]
+        3.  **Safety:**
+            - **Driving:** It is illegal to drive if impaired by cannabis, even if prescribed. [cite_start]Impairment can last over 24 hours. [cite: 58, 97]
+            - [cite_start]**Alcohol:** Avoid alcohol as it can worsen side effects. [cite: 54, 99]
+            - [cite_start]**Storage:** Keep medicine in its original container, locked away from children in a cool, dark place. [cite: 60, 61, 62]
+            - **Travel:** Prescriptions are valid in the UK only. [cite_start]For international travel, the user must check with the relevant embassy. [cite: 64, 65]
+        --- END OF GUIDANCE ---
+    """)
 
     messages = [{"role": "system", "content": system_prompt}]
     for turn in history:
@@ -165,13 +169,11 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
 
 # --- TELEGRAM HANDLERS & CONVERSATION FLOW ---
 
-# --- MODIFICATION --- Start function now sends 3 messages with delays.
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Initiates a new conversation with a multi-part, delayed welcome message."""
     context.user_data.clear()
     context.user_data[STATE_KEY] = STATE_AWAITING_CONSENT
     
-    # Message 1: Welcome
     await update.message.reply_text(
         "👋 Welcome to Indra Clinic! I’m Indie, your digital assistant.\n\n"
         "**Purpose of this Chat:** Please note that this chat is **not intended to provide medical advice.** "
@@ -179,13 +181,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await asyncio.sleep(1.5)
 
-    # Message 2: Beta notice
     await update.message.reply_text(
-        "This service is currently in beta testing. If you would prefer, you can email us directly at drT@indra.clinic at any time."
+        [cite_start]"This service is currently in beta testing. If you would prefer, you can email us directly at drT@indra.clinic at any time. [cite: 7]"
     )
     await asyncio.sleep(1.5)
 
-    # Message 3: Consent form
     consent_message = (
         "Before we continue, please read our brief privacy notice:\n\n"
         "**Your Privacy at Indra Clinic**\n"
