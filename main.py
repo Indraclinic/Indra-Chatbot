@@ -68,18 +68,24 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
     
     async with httpx.AsyncClient() as client:
         try:
-            # Step 1: Find the patient by their email address (this part was already working)
+            # Step 1: Find the patient by their email address (this part is working)
+            print(f"Searching for patient with email: {patient_email} via GraphQL...")
             find_payload = {"query": find_patient_query, "variables": {"search": patient_email}}
             search_response = await client.post(SEMBLE_GRAPHQL_URL, headers=headers, json=find_payload, timeout=20)
             search_response.raise_for_status()
+            
             response_data = search_response.json()
-            if response_data.get("errors"): raise Exception(f"GraphQL error during patient search: {response_data['errors']}")
+            if response_data.get("errors"):
+                raise Exception(f"GraphQL error during patient search: {response_data['errors']}")
+
             patients = response_data.get('data', {}).get('patients', {}).get('data', [])
-            if not patients: raise Exception(f"No patient found in Semble with email: {patient_email}")
+            if not patients:
+                raise Exception(f"No patient found in Semble with email: {patient_email}")
+            
             semble_patient_id = patients[0]['id']
             print(f"Found Semble Patient ID: {semble_patient_id}")
 
-            # Step 2: Create the FreeTextRecord using the correct mutation
+            # Step 2: Create the FreeTextRecord using the correct mutation based on your findings
             create_record_mutation = """
                 mutation CreateFreeTextRecord($patientId: ID!, $question: String!, $answer: String!) {
                     createFreeTextRecord(patientId: $patientId, input: {question: $question, answer: $answer}) {
@@ -90,11 +96,16 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
             """
             note_question = f"Indie Bot Query: {category}"
             note_answer = (f"**AI Summary:**\n{summary}\n\n--- Full Conversation Transcript ---\n{transcript}")
-            mutation_variables = {"patientId": semble_patient_id, "question": note_question, "answer": note_answer}
+            mutation_variables = {
+                "patientId": semble_patient_id,
+                "question": note_question,
+                "answer": note_answer
+            }
             
             consult_payload = {"query": create_record_mutation, "variables": mutation_variables}
             consult_response = await client.post(SEMBLE_GRAPHQL_URL, headers=headers, json=consult_payload, timeout=20)
             consult_response.raise_for_status()
+
             consult_data = consult_response.json()
             if consult_data.get("errors") or (consult_data.get("data", {}).get("createFreeTextRecord") or {}).get("error"):
                  raise Exception(f"GraphQL error during record creation: {consult_data}")
@@ -119,3 +130,188 @@ def generate_report_and_send_email(dob: str, patient_email: str, session_id: str
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
         server.starttls()
         server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        
+        admin_subject = f"[Indie Bot] {category} Query from: {patient_email} (DOB: {dob})"
+        admin_msg = EmailMessage()
+        admin_msg['Subject'] = admin_subject
+        admin_msg['From'] = SENDER_EMAIL
+        admin_msg['To'] = REPORT_EMAIL
+        admin_msg.set_content(f"Query from {patient_email}...\n\n--- AI-Generated Summary ---\n{summary}")
+        admin_msg.add_attachment(transcript_content.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_{session_id[-6:]}.txt')
+        server.send_message(admin_msg)
+        print(f"Admin report successfully emailed to {REPORT_EMAIL}")
+        
+        patient_subject = "Indra Clinic: A copy of your recent query"
+        patient_msg = EmailMessage()
+        patient_msg['Subject'] = patient_subject
+        patient_msg['From'] = SENDER_EMAIL
+        patient_msg['To'] = patient_email
+        patient_msg.set_content(f"Dear Patient,\n\nFor your records, here is a summary of your recent query.\n\n**Summary:**\n{summary}\n\nKind regards,\nThe Indra Clinic Team")
+        patient_msg.add_attachment(transcript_content.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_summary.txt')
+        server.send_message(patient_msg)
+        print(f"Patient copy successfully emailed to {patient_email}")
+    
+    return transcript_content
+
+# --- AI / OPENROUTER FUNCTIONS ---
+def query_openrouter(history: list) -> tuple[str, str, str, str]:
+    # This function is unchanged, using the external system_prompt.txt file
+    # (For clarity, the prompt text is included here but should be in your file)
+    system_prompt = textwrap.dedent("""\
+        You are Indie, a helpful assistant for Indra Clinic. Your tone is professional and empathetic.
+        Your primary goal is to gather information for a report. You must not provide medical advice.
+        Your output must be a JSON object with four keys: 'response', 'category', 'summary', and 'action'.
+
+        **Action Logic (CRITICAL):**
+        - If your 'response' is a question, your 'action' MUST be 'CONTINUE'.
+        - Set 'action' to 'REPORT' only when you have gathered all necessary information.
+
+        **Workflow Instructions:**
+        - **Clinical/Medical:** Your role IS to ask clarifying questions about symptoms (onset, duration, severity, etc.).
+        - **Prescription/Medication:** Ask clarifying questions to understand the user's need.
+    """)
+    messages = [{"role": "system", "content": system_prompt}]
+    for turn in history:
+        role = 'assistant' if turn['role'] == 'indie' else 'user'
+        messages.append({"role": role, "content": turn['text']})
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    data = {"model": "openai/gpt-4o-mini", "messages": messages, "response_format": {"type": "json_object"}}
+    try:
+        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=20)
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        parsed = json.loads(content)
+        return (parsed.get('response', "I'm having trouble."), parsed.get('category', 'Admin'), parsed.get('summary', 'No summary.'), parsed.get('action', 'CONTINUE').upper())
+    except Exception as e:
+        print(f"An error occurred in query_openrouter: {e}")
+        return "A technical issue occurred.", "Admin", "Unhandled error", "CONTINUE"
+
+# --- TELEGRAM HANDLERS & CONVERSATION FLOW ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    context.user_data[SESSION_ID_KEY] = str(uuid.uuid4())
+    context.user_data[STATE_KEY] = STATE_AWAITING_CONSENT
+    await update.message.reply_text("👋 Welcome to Indra Clinic! I’m Indie, your digital assistant.\n\n**Purpose of this Chat:** This is an administrative tool, not for medical advice.")
+    await asyncio.sleep(1.5)
+    await update.message.reply_text("This service is in beta. If you prefer, email us at drT@indra.clinic.")
+    await asyncio.sleep(1.5)
+    consent_message = ("Please read our privacy notice:\n\n**Your Privacy**\n• **Verification:** We use your email and DOB to link this chat to your record.\n• **AI Assistance:** Your anonymised chat is processed by an AI.\n• **Medical Record:** A summary will be added to your Semble EMR file.\n• **Your Records:** A copy will be emailed to you.\n\nTo proceed, type **'I agree'**.")
+    await update.message.reply_text(consent_message)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    current_state = context.user_data.get(STATE_KEY)
+    user_message = update.message.text.strip()
+    
+    if current_state == STATE_AWAITING_CONSENT:
+        if user_message.lower() == 'i agree':
+            context.user_data[STATE_KEY] = STATE_AWAITING_EMAIL
+            await update.message.reply_text("Thank you. To begin, please provide your **email address**.")
+        else: await update.message.reply_text("To continue, please type 'I agree'.")
+    elif current_state == STATE_AWAITING_EMAIL:
+        if '@' in user_message and '.' in user_message:
+            context.user_data[EMAIL_KEY] = user_message
+            context.user_data[STATE_KEY] = STATE_AWAITING_DOB
+            await update.message.reply_text("Thank you. Please also provide your **Date of Birth** (DD/MM/YYYY).")
+        else: await update.message.reply_text("Hmmm, that email doesn't look valid. Please try again.")
+    elif current_state == STATE_AWAITING_DOB:
+        if len(user_message) >= 8:
+            context.user_data[DOB_KEY] = user_message
+            context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
+            context.user_data[HISTORY_KEY] = []
+            await update.message.reply_text(f"Thank you. Details noted.\n\nPlease select a category:\n1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**")
+        else: await update.message.reply_text("Hmmm, that date doesn't look right. Please use DD/MM/YYYY format.")
+    elif current_state == STATE_AWAITING_CATEGORY:
+        cleaned_message = user_message.lower()
+        if any(word in cleaned_message for word in ['1', 'admin']):
+            context.user_data[STATE_KEY] = STATE_ADMIN_AWAITING_CURRENT_APPT
+            await update.message.reply_text("Understood. To change an appointment, what is the date and time of your **current** appointment?")
+        elif any(word in cleaned_message for word in ['2', 'prescription']):
+            context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
+            context.user_data[HISTORY_KEY].append({"role": "user", "text": "Category: Prescription/Medication."})
+            await update.message.reply_text("Thank you. Please describe your prescription request.")
+        elif any(word in cleaned_message for word in ['3', 'clinical']):
+            context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
+            context.user_data[HISTORY_KEY].append({"role": "user", "text": "Category: Clinical/Medical."})
+            await update.message.reply_text("Thank you. Please describe the clinical issue.")
+        else: await update.message.reply_text("I don't understand. Please reply with a number (1-3).")
+    elif current_state == STATE_ADMIN_AWAITING_CURRENT_APPT:
+        context.user_data[CURRENT_APPT_KEY] = user_message
+        context.user_data[STATE_KEY] = STATE_ADMIN_AWAITING_NEW_APPT
+        await update.message.reply_text("Thank you. And what is the **new** date and time you would like?")
+    elif current_state == STATE_ADMIN_AWAITING_NEW_APPT:
+        current_appt = context.user_data.get(CURRENT_APPT_KEY)
+        new_appt = user_message
+        summary = f"Patient requests to change their appointment from '{current_appt}' to '{new_appt}'."
+        context.user_data[TEMP_REPORT_KEY] = {'category': 'Admin', 'summary': summary}
+        context.user_data[STATE_KEY] = STATE_AWAITING_CONFIRMATION
+        await update.message.reply_text(f"---\n**Query Summary**\n---\nPlease review:\n\n**Summary:** *{summary}*\n\nIs this correct? (Yes/No)")
+    elif current_state == STATE_CHAT_ACTIVE:
+        context.user_data[HISTORY_KEY].append({"role": "user", "text": user_message})
+        await update.message.chat.send_action("typing")
+        ai_response_text, category, summary, action = query_openrouter(context.user_data.get(HISTORY_KEY, []))
+        context.user_data[HISTORY_KEY].append({"role": "indie", "text": ai_response_text})
+        await update.message.reply_text(ai_response_text)
+        if action == "REPORT":
+            context.user_data[TEMP_REPORT_KEY] = {'category': category, 'summary': summary}
+            context.user_data[STATE_KEY] = STATE_AWAITING_CONFIRMATION
+            await update.message.reply_text(f"---\n**Query Summary**\n---\nPlease review:\n\n**Summary:** *{summary}*\n\nIs this correct? (Yes/No)")
+    elif current_state == STATE_AWAITING_CONFIRMATION:
+        confirmation = user_message.lower()
+        if confirmation in ['yes', 'y', 'correct', 'confirm']:
+            report_data = context.user_data.get(TEMP_REPORT_KEY)
+            transcript = ""
+            try:
+                transcript = generate_report_and_send_email(
+                    context.user_data.get(DOB_KEY), context.user_data.get(EMAIL_KEY),
+                    context.user_data.get(SESSION_ID_KEY), context.user_data.get(HISTORY_KEY, []),
+                    report_data['category'], report_data['summary']
+                )
+                await push_to_semble(
+                    context.user_data.get(EMAIL_KEY),
+                    report_data['category'],
+                    report_data['summary'],
+                    transcript
+                )
+                context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
+                await update.message.reply_text("Thank you. Your query has been logged and a copy sent to your email.\n\nIs there anything else I can help with? (Choose 1-3 or say 'No')")
+            except Exception as e:
+                error_message = f"--- CRITICAL ERROR during report dispatch: {e} ---"
+                print(error_message)
+                await update.message.reply_text(
+                    "A critical error occurred while finalising your report. "
+                    "Please forward this entire message to the development team.\n\n"
+                    f"**Error Details:** `{e}`"
+                )
+                context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
+        elif confirmation in ['no', 'n', 'incorrect']:
+            if context.user_data.get(HISTORY_KEY):
+                context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
+                await update.message.reply_text("Understood. Please provide corrections.")
+            else:
+                context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
+                await update.message.reply_text("Understood. Let's start over.")
+        else: await update.message.reply_text("I didn't understand. Please confirm with 'Yes' or 'No'.")
+    elif current_state == STATE_AWAITING_NEW_QUERY:
+        cleaned_message = user_message.lower()
+        if any(word in cleaned_message for word in ['no', 'nope', 'bye', 'end']):
+            await update.message.reply_text("Thank you for using our service. Be well.")
+            context.user_data.clear()
+        else:
+            context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
+            await handle_message(update, context)
+    else: await start(update, context)
+
+def main():
+    print("--- Indra Clinic Bot Initializing ---")
+    try:
+        app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        print("Bot is configured. Starting polling...")
+        app.run_polling(poll_interval=1)
+    except Exception as e:
+        print(f"FATAL ERROR during bot setup or polling: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
