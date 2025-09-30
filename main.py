@@ -226,15 +226,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             transcript = ""
             try:
                  # --- WORKAROUND --- Revert to deprecated method for older library versions
-                transcript = await context.application.to_thread(
-                    generate_report_and_send_email,
-                    context.user_data.get(DOB_KEY),
-                    context.user_data.get(EMAIL_KEY),
-                    context.user_data.get(SESSION_ID_KEY),
-                    context.user_data.get(HISTORY_KEY, []),
-                    report_data['category'],
-                    report_data['summary']
-                )
+                import asyncio  # already imported at top
+
+transcript = await asyncio.to_thread(
+    generate_report_and_send_email,
+    context.user_data.get(DOB_KEY),
+    context.user_data.get(EMAIL_KEY),
+    context.user_data.get(SESSION_ID_KEY),
+    context.user_data.get(HISTORY_KEY, []),
+    report_data['category'],
+    report_data['summary']
+)
+
                 
                 await push_to_semble(
                     context.user_data.get(EMAIL_KEY),
