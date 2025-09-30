@@ -1,2 +1,7 @@
-python-telegram-bot[ext]>=21.0
+python-telegram-bot[ext]==21.2 # Check for the latest stable version and pin it
+httpx
+python-dotenv # (If you use this locally)
+json
+smtplib
+email-message
 requests
