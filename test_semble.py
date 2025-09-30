@@ -21,12 +21,12 @@ async def run_diagnostics():
         "Content-Type": "application/json"
     }
 
-    # A list of common URL patterns to test for finding a patient by email
+    # --- FIX --- Added 'None' to the GET requests to ensure all tuples have 3 values.
     endpoints_to_test = [
-        ("GET", f"https://api.semble.io/v1/patients?email={TEST_PATIENT_EMAIL}"),
-        ("GET", f"https://api.semble.io/v1/patients/search?email={TEST_PATIENT_EMAIL}"),
+        ("GET", f"https://api.semble.io/v1/patients?email={TEST_PATIENT_EMAIL}", None),
+        ("GET", f"https://api.semble.io/v1/patients/search?email={TEST_PATIENT_EMAIL}", None),
         ("POST", "https://api.semble.io/v1/patients/search", {"email": TEST_PATIENT_EMAIL}),
-        ("GET", f"https://api.semble.io/v1/users?email={TEST_PATIENT_EMAIL}"),
+        ("GET", f"https://api.semble.io/v1/users?email={TEST_PATIENT_EMAIL}", None),
     ]
 
     async with httpx.AsyncClient() as client:
