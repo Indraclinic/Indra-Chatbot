@@ -225,8 +225,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report_data = context.user_data.get(TEMP_REPORT_KEY)
             transcript = ""
             try:
-                # --- MODIFICATION --- Run the blocking email function in a non-blocking way
-                transcript = await context.application.to_thread(
+                 # --- WORKAROUND --- Revert to deprecated method for older library versions
+                transcript = await context.application.job_queue.run_in_threadpool(
                     generate_report_and_send_email,
                     context.user_data.get(DOB_KEY),
                     context.user_data.get(EMAIL_KEY),
