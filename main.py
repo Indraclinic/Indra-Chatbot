@@ -224,25 +224,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if confirmation in ['yes', 'y', 'correct', 'confirm']:
             report_data = context.user_data.get(TEMP_REPORT_KEY)
             transcript = ""
-            try:
-                 # --- WORKAROUND --- Revert to deprecated method for older library versions
-                import asyncio  # already imported at top
-
-transcript = await asyncio.to_thread(
-    generate_report_and_send_email,
-    context.user_data.get(DOB_KEY),
-    context.user_data.get(EMAIL_KEY),
-    context.user_data.get(SESSION_ID_KEY),
-    context.user_data.get(HISTORY_KEY, []),
-    report_data['category'],
-    report_data['summary']
-)
+try:
+    transcript = await asyncio.to_thread(
+        generate_report_and_send_email,
+        context.user_data.get(DOB_KEY),
+        context.user_data.get(EMAIL_KEY),
+        context.user_data.get(SESSION_ID_KEY),
+        context.user_data.get(HISTORY_KEY, []),
+        report_data['category'],
+        report_data['summary']
+    )
 except Exception as e:
     logger.critical("CRITICAL ERROR during report dispatch: %s", e, exc_info=True)
     await update.message.reply_text(
         "Sorry, something went wrong while generating your report."
     )
     return ConversationHandler.END
+
                 
                 await push_to_semble(
                     context.user_data.get(EMAIL_KEY),
