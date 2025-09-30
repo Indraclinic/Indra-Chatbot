@@ -226,7 +226,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             transcript = ""
             try:
                  # --- WORKAROUND --- Revert to deprecated method for older library versions
-                transcript = await context.application.job_queue.run_in_threadpool(
+                transcript = await context.application.to_thread(
                     generate_report_and_send_email,
                     context.user_data.get(DOB_KEY),
                     context.user_data.get(EMAIL_KEY),
