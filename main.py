@@ -99,7 +99,6 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
     Queries OpenRouter with an ANONYMIZED conversation history.
     The AI is grounded with information from the patient guidance document.
     """
-    # --- MODIFICATION --- New system prompt incorporating the patient guidance leaflet.
     system_prompt = (
         "You are Indie, a helpful assistant for Indra Clinic, a UK-based medical cannabis clinic. "
         "Your tone must be professional, empathetic, and clear. Use appropriate medical terminology "
@@ -111,18 +110,18 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
         "If the guidance does not cover a specific question, you must state that you do not have that information and advise the user to contact the clinic directly.\n\n"
         "--- OFFICIAL PATIENT GUIDANCE --- \n"
         "1.  **Medication Usage:**\n"
-        "    - **Flower:** Must be used in a medical vaporiser. Start at 180°C (max 210°C). Take one small inhalation and wait at least 5 minutes before another. [cite_start]Never smoke or dab it. [cite: 17, 18, 19, 20, 21, 22]\n"
-        "    - **Vapes:** Use with an approved device. [cite_start]Start with one short puff (2 seconds) and wait at least 5 minutes before repeating. [cite: 24, 25]\n"
-        "    - **Pastilles:** Let them dissolve slowly in the mouth. Effects can take 30-90 minutes. [cite_start]Absorption may be improved with a light, fatty meal (e.g., yoghurt). [cite: 29, 30, 31, 32]\n"
-        "    - **Oils:** Place under the tongue with the syringe and hold for about 1 minute. [cite_start]Can be taken with fatty food for better absorption. [cite: 35, 36, 38]\n"
+        "    - **Flower:** Must be used in a medical vaporiser. Start at 180°C (max 210°C). Take one small inhalation and wait at least 5 minutes before another. Never smoke or dab it.\n"
+        "    - **Vapes:** Use with an approved device. Start with one short puff (2 seconds) and wait at least 5 minutes before repeating.\n"
+        "    - **Pastilles:** Let them dissolve slowly in the mouth. Effects can take 30-90 minutes. Absorption may be improved with a light, fatty meal (e.g., yoghurt).\n"
+        "    - **Oils:** Place under the tongue with the syringe and hold for about 1 minute. Can be taken with fatty food for better absorption.\n"
         "2.  **Side Effects:**\n"
-        [cite_start]"    - **Mild (dizzy, sleepy, fast heartbeat):** Rest and contact the clinic if concerned. [cite: 42, 43]\n"
-        "    - **Severe (chest pain, severe paranoia, trouble breathing):** The user must call 999 or 111 immediately. [cite_start]This is a red flag. [cite: 12, 44]\n"
+        "    - **Mild (dizzy, sleepy, fast heartbeat):** Rest and contact the clinic if concerned.\n"
+        "    - **Severe (chest pain, severe paranoia, trouble breathing):** The user must call 999 or 111 immediately. This is a red flag.\n"
         "3.  **Safety:**\n"
-        [cite_start]"    - **Driving:** It is illegal to drive if impaired by cannabis, even if prescribed. [cite: 58]\n"
-        [cite_start]"    - **Alcohol:** Avoid alcohol as it can worsen side effects. [cite: 54]\n"
-        [cite_start]"    - **Storage:** Keep medicine in its original container, locked away from children in a cool, dark place. [cite: 60, 61, 62]\n"
-        "    - **Travel:** Prescriptions are valid in the UK only. [cite_start]For international travel, the user must check with the relevant embassy. [cite: 64, 65]\n"
+        "    - **Driving:** It is illegal to drive if impaired by cannabis, even if prescribed.\n"
+        "    - **Alcohol:** Avoid alcohol as it can worsen side effects.\n"
+        "    - **Storage:** Keep medicine in its original container, locked away from children in a cool, dark place.\n"
+        "    - **Travel:** Prescriptions are valid in the UK only. For international travel, the user must check with the relevant embassy.\n"
         "--- END OF GUIDANCE ---"
     )
 
@@ -136,7 +135,7 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
 
     try:
         response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=20)
-        response.raise_for_status() # Raises an exception for bad status codes (4xx or 5xx)
+        response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
         parsed = json.loads(content)
         return (
@@ -170,7 +169,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Before we continue, please read our brief privacy notice:\n\n"
         "**Your Privacy at Indra Clinic**\n"
         "To use this service, we need to verify your identity and record this conversation in your patient file.\n\n"
-        [cite_start]"• **For Verification:** We use your Patient ID and Date of Birth only to securely locate your patient record. [cite: 74, 75]\n"
+        "• **For Verification:** We use your Patient ID and Date of Birth only to securely locate your patient record.\n"
         "• **For AI Assistance:** To understand your request, your anonymized conversation is processed by a third-party AI service. Your personal details are never shared with the AI.\n"
         "• **For Your Medical Record:** A transcript of this chat will be saved to your official file in our secure Semble EMR system.\n\n"
         "To confirm you have read this and wish to proceed, please type **'I agree'**."
@@ -195,7 +194,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[STATE_KEY] = STATE_AWAITING_DOB
             await update.message.reply_text("Thank you. For security, please also provide your **Date of Birth** (in DD/MM/YYYY format).")
         else:
-            # --- MODIFICATION --- Friendlier error message
             await update.message.reply_text("Hmmm, that seems to be empty. Please provide your 10-character Patient ID to continue.")
 
     elif current_state == STATE_AWAITING_DOB:
@@ -206,12 +204,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"Thank you. Your record has been securely located.\n\n"
                 "To ensure your query is directed to the appropriate team, please select the category that best describes your request:\n\n"
-                "1. [cite_start]**Administrative** (e.g., appointments, travel letters) [cite: 9]\n"
-                "2. [cite_start]**Prescription/Medication** (e.g., repeat scripts, delivery issues) [cite: 10]\n"
-                "3. [cite_start]**Clinical/Medical** (e.g., side effects, condition updates) [cite: 11]"
+                "1. **Administrative** (e.g., appointments, travel letters)\n"
+                "2. **Prescription/Medication** (e.g., repeat scripts, delivery issues)\n"
+                "3. **Clinical/Medical** (e.g., side effects, condition updates)"
             )
         else:
-            # --- MODIFICATION --- Friendlier error message
             await update.message.reply_text("Hmmm, that date doesn't look quite right. Could you please provide it in DD/MM/YYYY format?")
 
     elif current_state == STATE_AWAITING_CATEGORY:
