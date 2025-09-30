@@ -241,13 +241,13 @@ except Exception as e:
     )
     return ConversationHandler.END
 
-                
-                await push_to_semble(
+ await push_to_semble(
                     context.user_data.get(EMAIL_KEY),
                     report_data['category'],
                     report_data['summary'],
                     transcript
-                )
+                )                
+               
                 context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
                 await update.message.reply_text("Thank you. Your query has been logged and a copy sent to your email.\n\nIs there anything else I can help with?")
             except Exception as e:
