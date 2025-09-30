@@ -49,26 +49,16 @@ STATE_AWAITING_NEW_QUERY = 'awaiting_new_query'
 WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
 
 
-# --- MODIFICATION --- Corrected the Semble API endpoint URL and payload.
 async def push_to_semble(patient_id: str, dob: str, patient_email: str, summary: str, transcript: str):
     """Connects to the Semble API and pushes a new consultation note."""
     if not SEMBLE_API_KEY:
         print("SEMBLE_API_KEY environment variable not set. Skipping EMR push.")
         return
 
-    SEMBLE_API_URL = "https://api.semble.io/v1/consultations"
-    headers = {
-        "Authorization": f"Bearer {SEMBLE_API_KEY}",
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
+    SEMBLE_API_URL = f"https://api.semble.io/v1/patients/{patient_id}/consultations"
+    headers = {"Authorization": f"Bearer {SEMBLE_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
     note_body = (f"**Indie Bot AI Summary:**\n{summary}\n\n--- Full Conversation Transcript ---\n{transcript}")
-    
-    # The payload needs the patientId inside it for this endpoint
-    note_data = {
-        "patientId": patient_id,
-        "body": note_body
-    }
+    note_data = {"body": note_body}
     
     async with httpx.AsyncClient() as client:
         try:
@@ -146,27 +136,34 @@ def generate_report_and_send_email(patient_id: str, dob: str, patient_email: str
 # --- AI / OPENROUTER FUNCTIONS ---
 def query_openrouter(history: list) -> tuple[str, str, str, str]:
     """Queries OpenRouter with an anonymised conversation history."""
+    # --- MODIFICATION --- Rewrote the prompt to be more procedural and enforce the 'REPORT' action.
     system_prompt = textwrap.dedent("""\
-        You are Indie, a helpful assistant for Indra Clinic. Your tone is professional and empathetic.
-        Your primary goal is to gather information for a report. You must not provide medical advice.
+        You are Indie, a helpful assistant for Indra Clinic. Your primary goal is to gather information for a report. You must not provide medical advice.
         Your output must be a JSON object with four keys: 'response', 'category', 'summary', and 'action'.
 
-        **Action Logic (CRITICAL):**
-        - If your 'response' is a question, your 'action' MUST be 'CONTINUE'.
-        - Only set 'action' to 'REPORT' when you have all necessary information and are providing a final statement, not a question.
+        **DECISION PROCESS (Follow these steps in order):**
 
-        **Workflow-Specific Instructions (CRITICAL):**
-        - **Admin - Appointment Change:** Your ONLY goal is to collect two pieces of information: 1. The date/time of the CURRENT appointment. 2. The date/time of the DESIRED new appointment.
-            - Do NOT ask for the patient's name or reference numbers.
-            - Do NOT pretend to check for availability.
-            - Once you have the current and desired times, your 'response' must be a simple confirmation like 'Thank you, I have all the details needed.' and you MUST set 'action' to 'REPORT'.
-        - **Clinical/Medical:** Your role IS to ask clarifying questions about symptoms (onset, duration, severity, location, etc.).
+        **Step 1: Check for Specific Workflows.**
+        Review the user's latest message. Does it relate to one of the specific workflows below? If so, YOU MUST follow its rules exactly.
+
+        - **Workflow: Admin - Appointment Change:**
+            - Your task is to collect ONLY two pieces of information: 1. The date/time of the CURRENT appointment. 2. The date/time of the DESIRED new appointment.
+            - If you have one piece of information, ask for the other. Your 'action' MUST be 'CONTINUE'.
+            - Once you have BOTH the current and desired times, your task is complete. Your 'response' MUST be a simple confirmation (e.g., 'Thank you, I have all the details needed.') and your 'action' MUST be 'REPORT'.
+            - Do NOT ask for names, references, or pretend to check calendars.
+
+        **Step 2: If No Specific Workflow Matches, Follow General Rules.**
+        - **Clinical/Medical Issues:** Your role IS to ask clarifying questions about symptoms (onset, duration, severity, location, etc.) to gather data for the clinical team. 'action' should be 'CONTINUE' while you are asking questions.
+        - **Prescription/Other Admin:** Ask clarifying questions to understand the user's need.
         - **General Questions:** You can answer general questions based ONLY on the official clinic guidance below.
 
-        --- OFFICIAL PATIENT GUIDANCE ---
-        - **Medication Usage:** Flower must be vaporised (180-210°C). Vapes are one short puff. Wait 5 mins between doses for both.
-        - **Side Effects:** For mild symptoms (dizzy, sleepy), rest and contact the clinic. For severe symptoms (chest pain, trouble breathing), call 999 immediately.
-        - **Safety:** Driving while impaired is illegal. Avoid alcohol. Store medicine securely.
+        **Step 3: Decide the 'action'.**
+        - If your response is a question to gather more details, your 'action' MUST be 'CONTINUE'.
+        - Set 'action' to 'REPORT' only when you believe you have gathered all necessary information.
+
+        --- OFFICIAL PATIENT GUIDANCE (For general questions only) ---
+        - **Side Effects:** For mild symptoms (dizzy, sleepy), rest. For severe symptoms (chest pain, trouble breathing), call 999 immediately.
+        - **Safety:** Driving while impaired is illegal. Avoid alcohol.
         --- END OF GUIDANCE ---
     """)
 
@@ -382,7 +379,8 @@ def main():
     try:
         app.run_polling(poll_interval=1)
     except Conflict:
-        print("FATAL CONFLICT: Another instance of the bot is already running.")
+        # This error is handled by the user restarting the service.
+        print("FATAL CONFLICT: Another instance of the bot is already running. Please restart the service.")
         sys.exit(1)
     except Exception as e:
         print(f"An unexpected error occurred during polling: {e}")
