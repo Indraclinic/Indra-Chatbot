@@ -101,7 +101,6 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
     Queries OpenRouter with an ANONYMIZED conversation history.
     The AI is grounded with information from the patient guidance and consent form.
     """
-    # --- MODIFICATION --- Added explicit instructions on how to handle clinical information gathering.
     system_prompt = textwrap.dedent("""\
         You are Indie, a helpful assistant for Indra Clinic, a UK-based medical cannabis clinic.
         Your tone must be professional, empathetic, and clear. Use appropriate medical terminology but avoid complex jargon.
@@ -226,8 +225,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[DOB_KEY] = user_message
             context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
             context.user_data[HISTORY_KEY] = []
+            
+            # --- MODIFICATION --- Corrected the inaccurate "record located" message.
             await update.message.reply_text(
-                f"Thank you. Your record has been securely located.\n\n"
+                f"Thank you. I've securely noted those details for our report.\n\n"
                 "To ensure your query is directed to the appropriate team, please select the category that best describes your request:\n\n"
                 "1. **Administrative** (e.g., appointments, travel letters)\n"
                 "2. **Prescription/Medication** (e.g., repeat scripts, delivery issues)\n"
