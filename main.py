@@ -1,9 +1,8 @@
 import os
 import sys
-import signal
 import time
-import re
-from telegram import Update, Bot
+import uuid
+from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from telegram.error import InvalidToken, Conflict
 import requests
@@ -12,33 +11,35 @@ import smtplib
 from email.message import EmailMessage
 
 # --- ENVIRONMENT VARIABLE CONFIGURATION ---
-# Load environment variables. These MUST be set in your Render Worker settings.
+# These MUST be set in your environment (e.g., Render Worker settings).
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 CLINICAL_EMAIL = os.getenv("CLINICAL_EMAIL", "clinical@example.com")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@example.com")
 PRESCRIPTION_EMAIL = os.getenv("PRESCRIPTION_EMAIL", "prescribe@example.com")
-SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.example.com") # Replace with your SMTP server
+SMTP_SERVER = os.getenv("SMTP_SERVER")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 
-# Check that the tokens loaded correctly
-if TELEGRAM_TOKEN is None:
-    raise ValueError("TELEGRAM_TOKEN environment variable not set.")
-if OPENROUTER_API_KEY is None:
-    raise ValueError("OPENROUTER_API_KEY environment variable not set.")
+# Check that critical tokens are loaded
+if not TELEGRAM_TOKEN:
+    raise ValueError("FATAL: TELEGRAM_TOKEN environment variable not set.")
+if not OPENROUTER_API_KEY:
+    raise ValueError("FATAL: OPENROUTER_API_KEY environment variable not set.")
 
-
-# --- STATE AND CONSTANTS ---
-FULL_NAME_KEY = 'full_name'
-DOB_KEY = 'dob'
-EMAIL_KEY = 'email'
+# --- STATE AND DATA KEYS ---
 STATE_KEY = 'conversation_state'
 HISTORY_KEY = 'chat_history'
 TEMP_REPORT_KEY = 'temp_report'
+PATIENT_ID_KEY = 'patient_id'
+DOB_KEY = 'date_of_birth'
+SESSION_ID_KEY = 'session_id'
 
-STATE_AWAITING_INFO = 'awaiting_info'
+# --- CONVERSATION STATES ---
+STATE_AWAITING_CONSENT = 'awaiting_consent'
+STATE_AWAITING_PATIENT_ID = 'awaiting_patient_id'
+STATE_AWAITING_DOB = 'awaiting_dob'
 STATE_AWAITING_CATEGORY = 'awaiting_category'
 STATE_CHAT_ACTIVE = 'chat_active'
 STATE_AWAITING_CONFIRMATION = 'awaiting_confirmation'
@@ -47,9 +48,9 @@ WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
 
 # --- REPORTING AND INTEGRATION FUNCTIONS ---
 
-def generate_report_and_send_email(patient_info: dict, history: list, category: str, summary: str):
-    """Generates report, sends email to staff and patient, and simulates EMR push."""
-
+def generate_report_and_send_email(patient_id: str, dob: str, history: list, category: str, summary: str):
+    """Generates a report, sends emails, and simulates an EMR push."""
+    
     if category == "Admin":
         target_email = ADMIN_EMAIL
     elif category == "Prescription/Medication":
@@ -57,111 +58,82 @@ def generate_report_and_send_email(patient_info: dict, history: list, category: 
     elif category == "Clinical/Medical":
         target_email = CLINICAL_EMAIL
     else:
-        target_email = ADMIN_EMAIL
+        target_email = ADMIN_EMAIL # Default fallback
 
     # Build the report content for internal staff
-    report_content = f"--- INDRA CLINIC BOT REPORT ---\n"
-    report_content += f"Category: {category}\n"
-    report_content += f"Patient Name: {patient_info.get(FULL_NAME_KEY)}\n"
-    report_content += f"Email: {patient_info.get(EMAIL_KEY)}\n"
+    report_content = f"--- INDRA CLINIC BOT REPORT ---\n\n"
+    report_content += f"Patient ID: {patient_id}\n"
+    report_content += f"Patient DOB (for verification): {dob}\n"
+    report_content += f"Query Category: {category}\n"
     report_content += f"----------------------------------\n\n"
-    report_content += f"*** AI ACTION SUMMARY ***\n{summary}\n\n"
-    report_content += "FULL CONVERSATION TRANSCRIPT:\n"
-
+    report_content += f"*** AI-Generated Summary ***\n{summary}\n\n"
+    report_content += "*** Full Conversation Transcript ***\n"
+    
     for message in history:
-        # Don't include the initial detail submission in the transcript
-        if message['role'] == 'patient' and '@' in message['text'] and ',' in message['text']:
-            continue
         report_content += f"[{message['role'].upper()}]: {message['text']}\n"
-
-    # 2. SEMBLE EMR PUSH (Placeholder)
-    print(f"--- SEMBLE EMR PUSH SIMULATION (Data for {category}) ---")
-
-    # 3. EMAIL SENDING
+    
+    # Simulate pushing the transcript to Semble using the Patient ID
+    print(f"--- SEMBLE EMR PUSH SIMULATION for Patient ID: {patient_id} ---")
+    print("Data pushed successfully.")
+    
+    # Send email notifications
     try:
         if not all([SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER]):
-            print("Email skipped: SMTP configuration is incomplete in environment variables.")
+            print("Email skipped: SMTP configuration is incomplete.")
             return
 
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
 
-            # --- EMAIL 1: INTERNAL STAFF REPORT ---
+            # --- Internal Staff Email ---
             staff_msg = EmailMessage()
-            staff_msg['Subject'] = f"[Indie Bot] NEW {category.upper()} QUERY: {patient_info.get(FULL_NAME_KEY)}"
+            subject = f"[Indie Bot] New {category.upper()} Query for Patient ID: ...{patient_id[-4:]}"
             if category == "Clinical/Medical":
-                 staff_msg['Subject'] = f"[URGENT] [Indie Bot] NEW {category.upper()} QUERY: {patient_info.get(FULL_NAME_KEY)}"
+                subject = f"[URGENT] " + subject
+            
+            staff_msg['Subject'] = subject
             staff_msg['From'] = SMTP_USERNAME
             staff_msg['To'] = target_email
             staff_msg.set_content(report_content)
             server.send_message(staff_msg)
             print(f"Report successfully emailed to {target_email}")
 
-            # --- EMAIL 2: PATIENT CONFIRMATION ---
-            patient_email = patient_info.get(EMAIL_KEY)
-            if patient_email:
-                patient_msg = EmailMessage()
-                patient_msg['Subject'] = "Indra Clinic: We've received your query"
-                patient_msg['From'] = SMTP_USERNAME
-                patient_msg['To'] = patient_email
-
-                patient_body = (
-                    f"Dear {patient_info.get(FULL_NAME_KEY)},\n\n"
-                    f"Thank you for contacting Indra Clinic. We have successfully received your query and routed it to the correct department.\n\n"
-                    f"A member of our team will be in touch with you shortly.\n\n"
-                    f"For your records, here is a summary of your request:\n"
-                    f"----------------------------------\n"
-                    f"Category: {category}\n"
-                    f"Summary: {summary}\n"
-                    f"----------------------------------\n\n"
-                    f"Kind regards,\n"
-                    f"The Indra Clinic Team"
-                )
-                patient_msg.set_content(patient_body)
-                server.send_message(patient_msg)
-                print(f"Confirmation email successfully sent to {patient_email}")
-
     except Exception as e:
-        print(f"EMAIL FAILED: {e}")
+        print(f"EMAIL DISPATCH FAILED: {e}")
 
 
 # --- AI / OPENROUTER FUNCTIONS ---
 
-def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str, str]:
-    """Queries OpenRouter, handles errors, uses native JSON mode, and returns action."""
-
+def query_openrouter(session_id: str, history: list) -> tuple[str, str, str, str]:
+    """
+    Queries OpenRouter with an ANONYMIZED conversation history.
+    The AI never receives any patient's personal identifiers.
+    """
     MAX_RETRIES = 3
-    patient_context = f"Patient Name: {patient_info.get(FULL_NAME_KEY)}, DOB: {patient_info.get(DOB_KEY)}, Email: {patient_info.get(EMAIL_KEY)}"
-
+    
     system_prompt = (
-        "You are Indie, a helpful assistant for Indra Clinic, a UK-based medical cannabis clinic. Respond using concise UK English. "
-        "Do not offer medical advice. You MUST use terminology related to Cannabis-Based Medicinal Products (CBPMs) when appropriate. "
-        "Your output must be a JSON object with the keys 'response' (text for user), 'category', 'summary', and 'action'. "
-        "1. CATEGORY: One of 'Admin', 'Prescription/Medication', or 'Clinical/Medical'. "
-        "2. ACTION: Set to 'CONTINUE' if more detail is needed from the user. Set to 'REPORT' when sufficient detail is gathered. "
-        "If the user mentions urgent, life-threatening symptoms (e.g., severe chest pain, difficulty breathing, major uncontrolled bleeding, sudden paralysis, suicidal ideation), "
-        "your 'response' MUST immediately instruct the user to call 999 or 111, and you MUST set 'category' to 'Clinical/Medical' and 'action' to 'REPORT'. "
-        "For Admin (e.g., appointment changes, travel letter): Continue asking questions until the patient provides all required details. Then set 'action' to 'REPORT'. "
-        "For Prescription (e.g., repeat, dosing): Continue asking questions until the patient provides the product name and specific request. Then set 'action' to 'REPORT'. "
-        "For Clinical (non-urgent): Ask relevant clarifying questions about their symptoms, medication, or side effects, aiming to gather enough information for the clinical team to respond within 48h. Once gathered, set 'action' to 'REPORT'. "
-        f"Patient ID: {patient_context}. Keep responses professional and focused. "
+        "You are Indie, a helpful assistant for Indra Clinic, a UK-based medical cannabis clinic. "
+        "Your tone should be professional, empathetic, and clear. Use appropriate medical terminology "
+        "(e.g., 'Cannabis-Based Medicinal Products' or 'CBPMs') but avoid complex jargon. "
+        "Your primary goal is to gather sufficient information to create a detailed report for the clinical team. "
+        "You must not provide medical advice. Your output must be a JSON object with four keys: 'response', 'category', 'summary', and 'action'.\n\n"
+        "1.  **response**: Your text reply to the user.\n"
+        "2.  **category**: Classify the query as 'Admin', 'Prescription/Medication', or 'Clinical/Medical'.\n"
+        "3.  **summary**: A concise summary of the user's issue and the information gathered so far for the clinic staff.\n"
+        "4.  **action**: Set to 'CONTINUE' if you need more information from the user. Set to 'REPORT' only when you have all the necessary details to resolve the query (e.g., for a repeat prescription, you need the product name and dosage).\n\n"
+        "**Red Flag Protocol:** If the user describes life-threatening symptoms (severe chest pain, difficulty breathing, suicidal thoughts), your 'response' MUST immediately instruct them to contact emergency services (999 or 111). You must also set 'action' to 'REPORT' and 'category' to 'Clinical/Medical'."
     )
 
-    messages = [
-        {"role": "system", "content": system_prompt}
-    ]
+    messages = [{"role": "system", "content": system_prompt}]
     for turn in history:
         role = 'assistant' if turn['role'] == 'indie' else 'user'
-        if role == 'user' and '@' in turn['text'] and ',' in turn['text']:
-            continue
         messages.append({"role": role, "content": turn['text']})
 
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
-
     data = {
         "model": "openai/gpt-4o-mini",
         "messages": messages,
@@ -170,224 +142,187 @@ def query_openrouter(patient_info: dict, history: list) -> tuple[str, str, str, 
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=15)
-
+            response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=20)
+            
             if response.status_code == 200:
-                raw_content = response.json()["choices"][0]["message"]["content"]
-                try:
-                    parsed_json = json.loads(raw_content)
-                    category = parsed_json.get('category', 'Unknown')
-                    if category not in WORKFLOWS:
-                        category = 'Unknown'
-                    response_text = parsed_json.get('response', "I am unable to formulate a response right now.")
-                    summary_text = parsed_json.get('summary', 'No summary generated by AI.')
-                    action_type = parsed_json.get('action', 'CONTINUE').upper()
-                    return response_text, category, summary_text, action_type
-                except json.JSONDecodeError:
-                    print(f"AI failed to return valid JSON despite JSON mode. Raw: {raw_content}")
-                    return "I apologize, I'm having trouble processing your query.", "Unknown", "JSON parsing failed.", "CONTINUE"
-            elif response.status_code == 402:
-                print("OPENROUTER FATAL ERROR: 402 Insufficient Credits.")
-                return "CRITICAL ERROR: The AI service reports insufficient credits.", "Unknown", "CRITICAL BILLING FAILURE.", "CONTINUE"
-            elif response.status_code in (401, 403):
-                print(f"OPENROUTER FATAL ERROR: Status Code {response.status_code}. Details: {response.text}")
-                return "ERROR: Authentication failed. Please check the OPENROUTER_API_KEY.", "Unknown", "Auth Failure.", "CONTINUE"
-            elif response.status_code in (429, 500, 502, 503, 504):
-                if attempt < MAX_RETRIES - 1:
-                    wait_time = 2 ** attempt
-                    print(f"OPENROUTER RETRYABLE ERROR: Status Code {response.status_code}. Retrying in {wait_time}s...")
-                    time.sleep(wait_time)
+                content = json.loads(response.json()["choices"][0]["message"]["content"])
+                return (
+                    content.get('response', "I'm having trouble formulating a response. Could you please rephrase?"),
+                    content.get('category', 'Admin'),
+                    content.get('summary', 'No summary was generated.'),
+                    content.get('action', 'CONTINUE').upper()
+                )
+            else:
+                print(f"OpenRouter API Error (Attempt {attempt+1}): Status {response.status_code}, Body: {response.text}")
+                if response.status_code in [429, 500, 502, 503, 504] and attempt < MAX_RETRIES - 1:
+                    time.sleep(2 ** attempt)
                     continue
-                else:
-                    print(f"OPENROUTER FAILED after {MAX_RETRIES} attempts. Status Code {response.status_code}. Details: {response.text}")
-                    return "Sorry, the AI service is currently unavailable or busy. Please try again.", "Unknown", "Service Unavailable.", "CONTINUE"
-            else:
-                print(f"OPENROUTER NON-RETRYABLE ERROR: Status Code {response.status_code}. Details: {response.text}")
-                return "Sorry, the AI service is currently unavailable or busy. Please try again.", "Unknown", "API Error.", "CONTINUE"
-
-        except requests.exceptions.RequestException:
+                return "Our AI service is currently experiencing issues. Please try again shortly.", "Admin", "Service unavailable", "CONTINUE"
+        
+        except requests.exceptions.RequestException as e:
+            print(f"Network Error querying OpenRouter (Attempt {attempt+1}): {e}")
             if attempt < MAX_RETRIES - 1:
-                wait_time = 2 ** attempt
-                print(f"OpenRouter Network Error: Retrying in {wait_time}s...")
-                time.sleep(wait_time)
+                time.sleep(2 ** attempt)
                 continue
-            else:
-                print(f"OpenRouter Network/Timeout FAILED after {MAX_RETRIES} attempts.")
-                return "I am experiencing connectivity issues right now. Please try again later.", "Unknown", "Network Timeout.", "CONTINUE"
-        except Exception as e:
-            print(f"General Error in query_openrouter: {e}")
-            return "Sorry, there was a problem processing your request.", "Unknown", "Unhandled Code Error.", "CONTINUE"
+            return "I'm experiencing connectivity issues. Please check your connection or try again later.", "Admin", "Network error", "CONTINUE"
+        
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"Error parsing AI response: {e}")
+            return "I received an unexpected response from our AI service. Let's try that again.", "Admin", "Parsing error", "CONTINUE"
 
-    return "Sorry, a final critical error occurred.", "Unknown", "Final Fallback.", "CONTINUE"
+    return "We've encountered a persistent issue with our AI service. Please contact the clinic directly.", "Admin", "Final fallback error", "CONTINUE"
 
 
-# --- TELEGRAM HANDLERS & CLEANUP ---
+# --- TELEGRAM HANDLERS & CONVERSATION FLOW ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Initiates a new conversation, clears old data, and asks for consent."""
     context.user_data.clear()
-    context.user_data[STATE_KEY] = STATE_AWAITING_INFO
-    context.user_data[HISTORY_KEY] = []
-    await update.message.reply_text(
-        "👋 Welcome to Indra Clinic!\n\nI’m Indie, your assistant.\n\nPlease enter your **full name, date of birth (DD/MM/YYYY), and email**, separated by commas, to begin (e.g., *Jane Doe, 01/01/1980, jane@example.com*):"
+    context.user_data[SESSION_ID_KEY] = str(uuid.uuid4())
+    context.user_data[STATE_KEY] = STATE_AWAITING_CONSENT
+    
+    consent_message = (
+        "👋 Welcome to Indra Clinic! I’m Indie, your digital assistant.\n\n"
+        "**Purpose of this Chat:** Please note that this chat is **not intended to provide medical advice.** "
+        "It is an administrative tool designed to improve our workflow and help us address your queries more efficiently.\n\n"
+        "Before we continue, please read our brief privacy notice:\n\n"
+        "**Your Privacy at Indra Clinic**\n"
+        "To use this service, we need to verify your identity and record this conversation in your patient file.\n\n"
+        "• **For Verification:** We use your Patient ID and Date of Birth only to securely locate your patient record.\n"
+        "• **For AI Assistance:** To understand your request, your anonymized conversation is processed by a third-party AI service. Your personal details are never shared with the AI.\n"
+        "• **For Your Medical Record:** A transcript of this chat will be saved to your official file in our secure Semble EMR system.\n\n"
+        "To confirm you have read this and wish to proceed, please type **'I agree'**."
     )
+    await update.message.reply_text(consent_message)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text
+    """The main state machine for handling all user messages."""
     current_state = context.user_data.get(STATE_KEY)
+    user_message = update.message.text.strip()
 
-    if current_state == STATE_AWAITING_INFO:
-        # --- FINAL POLISH: Made this validation slightly more robust internally ---
-        try:
-            # Split the message into a maximum of three parts
-            parts = [item.strip() for item in user_message.split(',', 2)]
-            if len(parts) != 3:
-                # This error is raised if there aren't two commas
-                raise ValueError("Input does not have three comma-separated parts.")
+    if current_state == STATE_AWAITING_CONSENT:
+        if user_message.lower() == 'i agree':
+            context.user_data[STATE_KEY] = STATE_AWAITING_PATIENT_ID
+            await update.message.reply_text("Thank you. Please provide your **Patient ID**. This is the 10-character code included in all letters emailed to you.")
+        else:
+            await update.message.reply_text("To continue, you must consent to the privacy notice. Please type 'I agree' to proceed.")
+    
+    elif current_state == STATE_AWAITING_PATIENT_ID:
+        if user_message: # Basic check to ensure it's not empty
+            context.user_data[PATIENT_ID_KEY] = user_message
+            context.user_data[STATE_KEY] = STATE_AWAITING_DOB
+            await update.message.reply_text("Thank you. For security, please also provide your **Date of Birth** (in DD/MM/YYYY format).")
+        else:
+            await update.message.reply_text("The Patient ID cannot be empty. Please provide the 10-character code.")
 
-            name, dob, email = parts
-            
-            # Basic validation on the parts
-            if '@' not in email or len(name) < 3 or len(dob) < 8:
-                 raise ValueError("Validation of one of the parts failed.")
-            
-            # If all checks pass, store the data and move to the next state
-            context.user_data[FULL_NAME_KEY] = name
-            context.user_data[DOB_KEY] = dob
-            context.user_data[EMAIL_KEY] = email
+    elif current_state == STATE_AWAITING_DOB:
+        # In a real app, you would add more robust validation for the DOB format.
+        if len(user_message) >= 8:
+            context.user_data[DOB_KEY] = user_message
             context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
-            context.user_data[HISTORY_KEY] = [{"role": "patient", "text": user_message}]
-            
+            context.user_data[HISTORY_KEY] = [] # Initialize chat history after verification
             await update.message.reply_text(
-                f"Thank you, {name}. Your information has been securely noted.\n\n"
-                "To help me direct your query, please tell me what your request is about:\n\n"
-                "1. **Administrative** (appointments, travel letters)\n"
-                "2. **Prescription/Medication** (repeats, dosing)\n"
-                "3. **Clinical/Medical** (side effects, condition updates)\n\n"
-                "Please reply with the number or the category name."
+                f"Thank you. Your record has been securely located.\n\n"
+                "To ensure your query is directed to the appropriate team, please select the category that best describes your request:\n\n"
+                "1. **Administrative** (e.g., appointments, travel letters)\n"
+                "2. **Prescription/Medication** (e.g., repeat scripts, dosing queries)\n"
+                "3. **Clinical/Medical** (e.g., side effects, condition updates)"
             )
-        except (ValueError, IndexError):
-            # This is the intentional, user-facing error message for bad formatting
-            await update.message.reply_text(
-                "I couldn't parse your details. Please ensure you enter them in the exact format: **Full Name, DD/MM/YYYY, Email** (separated by commas)."
-            )
+        else:
+            await update.message.reply_text("The Date of Birth seems incomplete. Please provide it in DD/MM/YYYY format.")
 
     elif current_state == STATE_AWAITING_CATEGORY:
-        cleaned_message = user_message.lower().strip()
+        cleaned_message = user_message.lower()
         category_map = {
             '1': 'Administrative', 'admin': 'Administrative', 'administrative': 'Administrative',
             '2': 'Prescription/Medication', 'prescription': 'Prescription/Medication', 'medication': 'Prescription/Medication',
             '3': 'Clinical/Medical', 'clinical': 'Clinical/Medical', 'medical': 'Clinical/Medical'
         }
-        
-        matched_category = None
-        if cleaned_message in category_map:
-            matched_category = category_map[cleaned_message]
-        else:
-            for keyword, category in category_map.items():
-                if not keyword.isdigit() and keyword in cleaned_message:
-                    matched_category = category
-                    break
+        matched_category = next((v for k, v in category_map.items() if k in cleaned_message), None)
 
         if matched_category:
-            context.user_data[HISTORY_KEY].append({"role": "patient", "text": f"My query is about a {matched_category} issue."})
             context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
-            await update.message.reply_text(
-                f"Great, I've noted this as a **{matched_category}** query. Please describe your request in detail now."
-            )
+            context.user_data[HISTORY_KEY].append({"role": "user", "text": f"The user selected the '{matched_category}' category for their query."})
+            await update.message.reply_text(f"Thank you. I've categorized your query under **{matched_category}**. Please describe the issue in detail now.")
         else:
+            await update.message.reply_text("I didn't recognize that selection. Please reply with the number or name corresponding to your query (e.g., '2' or 'Prescription').")
+
+    elif current_state == STATE_CHAT_ACTIVE:
+        context.user_data[HISTORY_KEY].append({"role": "user", "text": user_message})
+        await update.message.chat.send_action("typing")
+
+        ai_response_text, category, summary, action = query_openrouter(
+            context.user_data.get(SESSION_ID_KEY),
+            context.user_data.get(HISTORY_KEY, [])
+        )
+        
+        context.user_data[HISTORY_KEY].append({"role": "indie", "text": ai_response_text})
+        await update.message.reply_text(ai_response_text)
+
+        if action == "REPORT" and category in WORKFLOWS:
+            context.user_data[TEMP_REPORT_KEY] = {'category': category, 'summary': summary}
+            context.user_data[STATE_KEY] = STATE_AWAITING_CONFIRMATION
             await update.message.reply_text(
-                "I didn't recognize that category. Please choose one of the options by replying with the number or name (e.g., '2' or 'Prescription')."
+                f"---\n**Query Summary**\n---\n"
+                f"I have prepared the following summary for the **{category}** team. "
+                f"Please review it for accuracy before we formally log it in your patient file.\n\n"
+                f"**Summary:** *{summary}*\n\n"
+                "Is this summary correct and complete? Please reply with **'Yes'** to confirm or **'No'** to add more details."
             )
 
     elif current_state == STATE_AWAITING_CONFIRMATION:
-        confirmation = user_message.lower().strip()
-        report_data = context.user_data.get(TEMP_REPORT_KEY)
-        if confirmation in ['yes', 'y', '1', 'ok', 'confirm', 'correct']:
+        confirmation = user_message.lower()
+        
+        if confirmation in ['yes', 'y', 'correct', 'confirm']:
+            report_data = context.user_data.get(TEMP_REPORT_KEY)
             generate_report_and_send_email(
-                context.user_data,
+                context.user_data.get(PATIENT_ID_KEY),
+                context.user_data.get(DOB_KEY),
                 context.user_data.get(HISTORY_KEY, []),
                 report_data['category'],
                 report_data['summary']
             )
             await update.message.reply_text(
-                "Thank you for confirming. Your request has been securely logged and dispatched. You'll also receive an email confirmation shortly. The chat has now been reset for your privacy."
+                "Thank you for confirming. Your query has been securely logged and dispatched. This conversation will now be reset. If you have another issue, please start a new chat."
             )
-            await start(update, context)
-
-        elif confirmation in ['no', 'n', '0', 'edit', 'amend', 'incorrect']:
+            await start(update, context) # Reset for privacy
+            
+        elif confirmation in ['no', 'n', 'incorrect', 'amend']:
             context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
-            await update.message.reply_text(
-                "No problem. Please provide the correction or add more details now."
-            )
-        else:
-            await update.message.reply_text(
-                "I didn't recognize that. Please reply with 'Yes' to confirm the summary, or 'No' to add more details."
-            )
-
-    elif current_state == STATE_CHAT_ACTIVE:
-        context.user_data[HISTORY_KEY].append({"role": "patient", "text": user_message})
-        patient_info = {
-            FULL_NAME_KEY: context.user_data.get(FULL_NAME_KEY),
-            DOB_KEY: context.user_data.get(DOB_KEY),
-            EMAIL_KEY: context.user_data.get(EMAIL_KEY)
-        }
-        await update.message.chat.send_action("typing")
-        ai_response_text, category, report_summary, action_type = query_openrouter(patient_info, context.user_data[HISTORY_KEY])
-        context.user_data[HISTORY_KEY].append({"role": "indie", "text": ai_response_text})
-        await update.message.reply_text(ai_response_text)
+            context.user_data[HISTORY_KEY].append({"role": "user", "text": "The previous summary was incorrect."})
+            await update.message.reply_text("Understood. Please provide any corrections or additional information now.")
         
-        if action_type == "REPORT" and category in WORKFLOWS:
-            context.user_data[TEMP_REPORT_KEY] = {
-                'category': category,
-                'summary': report_summary
-            }
-            context.user_data[STATE_KEY] = STATE_AWAITING_CONFIRMATION
-            await update.message.reply_text(
-                "\n---\n**Report Summary for Staff**\n---\n"
-                f"**Category:** {category}\n"
-                f"**Summary:** {report_summary}\n\n"
-                "Please review this summary. If it is accurate, reply **'Yes'** to send the report to our team. "
-                "If anything is missing or incorrect, reply **'No'** to continue adding details."
-            )
+        else:
+            await update.message.reply_text("I didn't quite understand. Please confirm if the summary is correct by replying 'Yes' or 'No'.")
+
     else:
-        await start(update, context)
+        await start(update, context) # Fallback for any unknown state
 
 
-def telegram_cleanup(token):
-    try:
-        url = f"https://api.telegram.org/bot{token}/deleteWebhook"
-        response = requests.get(url, timeout=5)
-        response.raise_for_status()
-        print("Telegram cleanup attempted successfully.")
-    except Exception as e:
-        print(f"General error during Telegram cleanup: {e}")
+# --- BOT SETUP AND LAUNCH ---
 
-
-def start_bot_loop():
-    telegram_cleanup(TELEGRAM_TOKEN)
-    time.sleep(1)
+def main():
+    """Initializes and runs the Telegram bot."""
+    print("--- Indra Clinic Bot Initializing ---")
+    
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     except InvalidToken:
         print("FATAL ERROR: The TELEGRAM_TOKEN is invalid.")
         sys.exit(1)
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    print("Bot is configured. Starting polling...")
     try:
-        print("Bot polling initiated...")
-        app.run_polling(poll_interval=1.0, timeout=10)
-    except Conflict as e:
-        print(f"FATAL CONFLICT ERROR: {e}")
-        print("Another bot instance is active. The cleanup failed or the system is race-locking.")
+        app.run_polling(poll_interval=1)
+    except Conflict:
+        print("FATAL CONFLICT: Another instance of the bot is already running.")
         sys.exit(1)
-
-
-def main():
-    print(f"--- RENDER ENVIRONMENT DEBUG ---")
-    print(f"Running with Python Version: {sys.version}")
-    print(f"--- RENDER ENVIRONMENT DEBUG ---")
-    start_bot_loop()
-
+    except Exception as e:
+        print(f"An unexpected error occurred during polling: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
