@@ -1,2 +1,2 @@
 python-telegram-bot[ext]>=21.0
-httpx
+requests
