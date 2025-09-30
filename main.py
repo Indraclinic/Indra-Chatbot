@@ -4,6 +4,7 @@ import time
 import uuid
 import asyncio
 import textwrap
+import httpx # --- MODIFICATION --- Added new library for API calls
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from telegram.error import InvalidToken, Conflict
@@ -15,8 +16,8 @@ from email.message import EmailMessage
 # --- ENVIRONMENT VARIABLE CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-# --- MODIFICATION --- Consolidated the target email address
-REPORT_EMAIL = os.getenv("REPORT_EMAIL", "drT@indra.clinic") 
+SEMBLE_API_KEY = os.getenv("SEMBLE_API_KEY") # --- MODIFICATION ---
+REPORT_EMAIL = os.getenv("REPORT_EMAIL", "drT@indra.clinic")
 SMTP_SERVER = os.getenv("SMTP_SERVER")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME")
@@ -27,15 +28,13 @@ if not TELEGRAM_TOKEN:
 if not OPENROUTER_API_KEY:
     raise ValueError("FATAL: OPENROUTER_API_KEY environment variable not set.")
 
-# --- STATE AND DATA KEYS ---
+# ... (State and Data Keys remain the same) ...
 STATE_KEY = 'conversation_state'
 HISTORY_KEY = 'chat_history'
 TEMP_REPORT_KEY = 'temp_report'
 PATIENT_ID_KEY = 'patient_id'
 DOB_KEY = 'date_of_birth'
 SESSION_ID_KEY = 'session_id'
-
-# --- CONVERSATION STATES ---
 STATE_AWAITING_CONSENT = 'awaiting_consent'
 STATE_AWAITING_PATIENT_ID = 'awaiting_patient_id'
 STATE_AWAITING_DOB = 'awaiting_dob'
@@ -46,21 +45,55 @@ STATE_AWAITING_NEW_QUERY = 'awaiting_new_query'
 WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
 
 
+# --- MODIFICATION --- New function to push notes to Semble API
+async def push_to_semble(patient_id: str, summary: str, transcript: str):
+    """Connects to the Semble API and pushes a new consultation note."""
+    if not SEMBLE_API_KEY:
+        print("SEMBLE_API_KEY environment variable not set. Skipping EMR push.")
+        return
+
+    SEMBLE_API_URL = "https://api.semble.io/v1/consultations"
+    headers = {
+        "Authorization": f"Bearer {SEMBLE_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    # Structure the note content. The 'body' can be formatted with Markdown.
+    note_body = (
+        f"**Indie Bot AI Summary:**\n{summary}\n\n"
+        f"--- Full Conversation Transcript ---\n{transcript}"
+    )
+    
+    # Structure the JSON payload according to Semble's documentation
+    note_data = {
+        "patientId": patient_id,
+        "body": note_body
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(SEMBLE_API_URL, headers=headers, json=note_data, timeout=20)
+            response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+            print(f"Successfully pushed note to Semble for Patient ID: {patient_id}")
+        except httpx.HTTPStatusError as e:
+            # Log specific API errors
+            print(f"ERROR: Failed to push note to Semble. Status: {e.response.status_code}, Response: {e.response.text}")
+        except Exception as e:
+            # Log other errors like network issues
+            print(f"ERROR: An unexpected error occurred when pushing to Semble: {e}")
+
 # --- REPORTING AND INTEGRATION FUNCTIONS ---
 
-# --- MODIFICATION --- Function updated to attach transcript as a .txt file.
 def generate_report_and_send_email(patient_id: str, dob: str, history: list, category: str, summary: str):
     """
     Generates a report with summary in the body and a full transcript as a .txt attachment,
     then sends it to a single clinical email address.
     """
-    
-    # 1. Create the email subject
     subject = f"[Indie Bot] {category} Query for Patient ID: {patient_id} (DOB: {dob})"
     if category == "Clinical/Medical":
         subject = f"[URGENT] " + subject
 
-    # 2. Create the email body with the summary
     email_body = (
         f"A new query has been logged via the Indra Clinic Bot.\n\n"
         f"Patient ID: {patient_id}\n"
@@ -68,16 +101,11 @@ def generate_report_and_send_email(patient_id: str, dob: str, history: list, cat
         f"Category: {category}\n\n"
         f"--- AI-Generated Summary ---\n{summary}"
     )
-
-    # 3. Create the full transcript for the attachment
+    
     transcript_content = f"Full Conversation Transcript for Patient ID: {patient_id}\n\n"
     for message in history:
         transcript_content += f"[{message['role'].upper()}]: {message['text']}\n"
     
-    # 4. Simulate the EMR push
-    print(f"--- SEMBLE EMR PUSH SIMULATION for Patient ID: {patient_id} ---")
-    
-    # 5. Send the email
     try:
         if not all([SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER]):
             print("Email skipped: SMTP configuration is incomplete.")
@@ -88,24 +116,20 @@ def generate_report_and_send_email(patient_id: str, dob: str, history: list, cat
         msg['From'] = SMTP_USERNAME
         msg['To'] = REPORT_EMAIL
         msg.set_content(email_body)
-
-        # Attach the transcript as a .txt file
-        msg.add_attachment(transcript_content.encode('utf-8'), 
-                           maintype='text', subtype='plain', 
-                           filename=f'transcript_{patient_id}.txt')
+        msg.add_attachment(transcript_content.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_{patient_id}.txt')
 
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.send_message(msg)
             print(f"Report successfully emailed to {REPORT_EMAIL}")
-
     except Exception as e:
         print(f"EMAIL DISPATCH FAILED: {e}")
+    
+    return transcript_content # Return the transcript for use by the Semble function
 
 
-# --- AI / OPENROUTER FUNCTIONS ---
-
+# ... (query_openrouter function remains the same) ...
 def query_openrouter(history: list) -> tuple[str, str, str, str]:
     """Queries OpenRouter with an anonymised conversation history."""
     system_prompt = textwrap.dedent("""\
@@ -166,8 +190,7 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
         return "A technical issue occurred. Please try your request again.", "Admin", "Unhandled error", "CONTINUE"
 
 
-# --- TELEGRAM HANDLERS & CONVERSATION FLOW ---
-
+# ... (start and other handle_message states remain the same) ...
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Initiates a new conversation, clears old data, and asks for consent."""
     context.user_data.clear()
@@ -274,13 +297,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         confirmation = user_message.lower()
         if confirmation in ['yes', 'y', 'correct', 'confirm']:
             report_data = context.user_data.get(TEMP_REPORT_KEY)
-            generate_report_and_send_email(
+            
+            # --- MODIFICATION --- Call both the email and Semble functions
+            transcript = generate_report_and_send_email(
                 context.user_data.get(PATIENT_ID_KEY),
                 context.user_data.get(DOB_KEY),
                 context.user_data.get(HISTORY_KEY, []),
                 report_data['category'],
                 report_data['summary']
             )
+            
+            await push_to_semble(
+                context.user_data.get(PATIENT_ID_KEY),
+                report_data['summary'],
+                transcript
+            )
+
             context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
             await update.message.reply_text(
                 "Thank you for confirming. Your query has been logged.\n\n"
