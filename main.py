@@ -237,7 +237,12 @@ transcript = await asyncio.to_thread(
     report_data['category'],
     report_data['summary']
 )
-
+except Exception as e:
+    logger.critical("CRITICAL ERROR during report dispatch: %s", e, exc_info=True)
+    await update.message.reply_text(
+        "Sorry, something went wrong while generating your report."
+    )
+    return ConversationHandler.END
                 
                 await push_to_semble(
                     context.user_data.get(EMAIL_KEY),
