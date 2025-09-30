@@ -43,6 +43,7 @@ STATE_AWAITING_DOB = 'awaiting_dob'
 STATE_AWAITING_CATEGORY = 'awaiting_category'
 STATE_CHAT_ACTIVE = 'chat_active'
 STATE_AWAITING_CONFIRMATION = 'awaiting_confirmation'
+STATE_AWAITING_NEW_QUERY = 'awaiting_new_query' # --- MODIFICATION ---
 WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
 
 
@@ -101,21 +102,16 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
     Queries OpenRouter with an anonymised conversation history.
     The AI is grounded with information from the patient guidance and consent form.
     """
-    # --- MODIFICATION --- Added stricter rules for the AI's action logic.
     system_prompt = textwrap.dedent("""\
         You are Indie, a helpful assistant for Indra Clinic, a UK-based medical cannabis clinic.
         Your tone must be professional, empathetic, and clear. Use appropriate medical terminology but avoid complex jargon.
         You must not provide medical advice. Your output must be a JSON object with four keys: 'response', 'category', 'summary', and 'action'.
-
-        **Primary Goal: Information Gathering for Reports**
-        Your main purpose is to gather enough information from the patient to create a useful report for the clinical, admin, or prescription teams.
 
         **Action Logic (CRITICAL):**
         - If your 'response' to the user is a question to gather more details, your 'action' MUST be 'CONTINUE'.
         - Only set 'action' to 'REPORT' when you have gathered all necessary information and are providing a final statement, not a question.
 
         **Information Gathering vs. Giving Advice:**
-        It is vital to distinguish between gathering information and giving advice.
         - **Giving Advice (Forbidden):** Never tell the user what to do about their medical condition. Do not suggest treatments or interpret symptoms.
         - **Gathering Information (Required):** When a patient mentions a clinical issue (e.g., 'itchy foot', 'headache'), your role IS to ask clarifying questions to understand it. Ask about onset, duration, severity, location, etc. This is essential data collection for the clinical team's report.
 
@@ -178,7 +174,7 @@ def query_openrouter(history: list) -> tuple[str, str, str, str]:
 # --- TELEGRAM HANDLERS & CONVERSATION FLOW ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Initiates a new conversation with a multi-part, delayed welcome message."""
+    """Initiates a new conversation, clears old data, and asks for consent."""
     context.user_data.clear()
     context.user_data[STATE_KEY] = STATE_AWAITING_CONSENT
     
@@ -198,7 +194,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Before we continue, please read our brief privacy notice:\n\n"
         "**Your Privacy at Indra Clinic**\n"
         "To use this service, we need to verify your identity and record this conversation in your patient file.\n\n"
-        "• **For Verification:** We use your Patient ID and Date of Birth only to securely locate your patient record.\n"
+        "• **For Verification:** We use your Patient ID and Date of Birth only to securely associate this chat with your patient record.\n"
         "• **For AI Assistance:** To understand your request, your anonymised conversation is processed by a third-party AI service. Your personal details are never shared with the AI.\n"
         "• **For Your Medical Record:** A transcript of this chat will be saved to your official file in our secure Semble EMR system.\n\n"
         "To confirm you have read this and wish to proceed, please type **'I agree'**."
@@ -209,6 +205,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """The main state machine for handling all user messages."""
     current_state = context.user_data.get(STATE_KEY)
     user_message = update.message.text.strip()
+    
+    category_map = {
+        '1': 'Administrative', 'admin': 'Administrative', 'administrative': 'Administrative',
+        '2': 'Prescription/Medication', 'prescription': 'Prescription/Medication', 'medication': 'Prescription/Medication',
+        '3': 'Clinical/Medical', 'clinical': 'Clinical/Medical', 'medical': 'Clinical/Medical'
+    }
 
     if current_state == STATE_AWAITING_CONSENT:
         if user_message.lower() == 'i agree':
@@ -234,20 +236,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"Thank you. I've securely noted those details for our report.\n\n"
                 "To ensure your query is directed to the appropriate team, please select the category that best describes your request:\n\n"
-                "1. **Administrative** (e.g., appointments, travel letters)\n"
-                "2. **Prescription/Medication** (e.g., repeat scripts, delivery issues)\n"
-                "3. **Clinical/Medical** (e.g., side effects, condition updates)"
+                "1. **Administrative**\n"
+                "2. **Prescription/Medication**\n"
+                "3. **Clinical/Medical**"
             )
         else:
             await update.message.reply_text("Hmmm, that date doesn't look quite right. Could you please provide it in DD/MM/YYYY format?")
 
     elif current_state == STATE_AWAITING_CATEGORY:
         cleaned_message = user_message.lower()
-        category_map = {
-            '1': 'Administrative', 'admin': 'Administrative', 'administrative': 'Administrative',
-            '2': 'Prescription/Medication', 'prescription': 'Prescription/Medication', 'medication': 'Prescription/Medication',
-            '3': 'Clinical/Medical', 'clinical': 'Clinical/Medical', 'medical': 'Clinical/Medical'
-        }
         matched_category = next((v for k, v in category_map.items() if k in cleaned_message), None)
 
         if matched_category:
@@ -285,6 +282,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Is this summary correct and complete? Please reply with **'Yes'** to confirm or **'No'** to add more details."
             )
 
+    # --- MODIFICATION --- Updated logic for after a query is confirmed.
     elif current_state == STATE_AWAITING_CONFIRMATION:
         confirmation = user_message.lower()
         if confirmation in ['yes', 'y', 'correct', 'confirm']:
@@ -296,8 +294,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 report_data['category'],
                 report_data['summary']
             )
-            await update.message.reply_text("Thank you for confirming. Your query has been securely logged and dispatched. This conversation will now be reset.")
-            await start(update, context)
+            context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
+            await update.message.reply_text(
+                "Thank you for confirming. Your query has been securely logged and dispatched.\n\n"
+                "Is there anything else I can help you with today? You can choose a category below or type **'No'** to end the chat.\n\n"
+                "1. **Administrative**\n"
+                "2. **Prescription/Medication**\n"
+                "3. **Clinical/Medical**"
+            )
             
         elif confirmation in ['no', 'n', 'incorrect', 'amend']:
             context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
@@ -306,6 +310,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         else:
             await update.message.reply_text("I didn't quite understand. Please confirm with 'Yes' or 'No'.")
+            
+    # --- MODIFICATION --- New state to handle the end-of-conversation loop.
+    elif current_state == STATE_AWAITING_NEW_QUERY:
+        cleaned_message = user_message.lower()
+        matched_category = next((v for k, v in category_map.items() if k in cleaned_message), None)
+
+        if matched_category:
+            # Start a new query
+            context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
+            context.user_data[HISTORY_KEY] = [{"role": "user", "text": f"The user wants to start a new query in the '{matched_category}' category."}]
+            context.user_data.pop(TEMP_REPORT_KEY, None) # Clear old report data
+            await update.message.reply_text(f"Of course. Let's begin a new query for **{matched_category}**. Please describe your issue in detail.")
+        elif any(word in cleaned_message for word in ['no', 'nope', 'bye', 'end', 'finish', 'done']):
+            # End the conversation
+            await update.message.reply_text("Thank you for using our service. Be well. You can now close this chat, or type /start to begin again.")
+            context.user_data.clear()
+        else:
+            # Ask for clarification
+            await update.message.reply_text("I didn't quite understand. Please select a category (1-3) to start a new query, or type 'No' to end our chat.")
 
     else:
         await start(update, context)
