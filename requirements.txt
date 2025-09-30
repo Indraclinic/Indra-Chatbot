@@ -1,4 +1,4 @@
-python-telegram-bot[ext]==21.2  # Pinned to a version with 'to_thread'
+python-telegram-bot==21.2
 requests
 httpx
 python-dotenv
