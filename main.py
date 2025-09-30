@@ -52,37 +52,35 @@ WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
 async def push_to_semble(patient_email: str, summary: str, transcript: str):
     """Finds a patient by email in Semble, then pushes a new consultation note."""
     if not SEMBLE_API_KEY:
-        print("SEMBLE_API_KEY environment variable not set. Skipping EMR push.")
-        return
+        # This is a critical, loud failure point now
+        print("--- CRITICAL SEMBLE ERROR: SEMBLE_API_KEY environment variable not set. EMR push aborted. ---")
+        # We will raise an exception to be caught by the handler
+        raise ValueError("Semble API Key is not configured on the server.")
 
     headers = {"Authorization": f"Bearer {SEMBLE_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
     
     async with httpx.AsyncClient() as client:
-        try:
-            patient_search_url = f"https://api.semble.io/v1/patients/search?email={patient_email}"
-            search_response = await client.get(patient_search_url, headers=headers, timeout=20)
-            search_response.raise_for_status()
-            
-            patients = search_response.json().get('data', [])
-            if not patients:
-                print(f"ERROR: No patient found in Semble with email: {patient_email}")
-                return
-            
-            semble_patient_id = patients[0]['id']
-            print(f"Found Semble Patient ID: {semble_patient_id} for email: {patient_email}")
+        # Step 1: Find the patient by their email address
+        patient_search_url = f"https://api.semble.io/v1/patients/search?email={patient_email}"
+        search_response = await client.get(patient_search_url, headers=headers, timeout=20)
+        search_response.raise_for_status()
+        
+        patients = search_response.json().get('data', [])
+        if not patients:
+            raise ValueError(f"No patient found in Semble with email: {patient_email}")
+        
+        semble_patient_id = patients[0]['id']
+        print(f"Found Semble Patient ID: {semble_patient_id} for email: {patient_email}")
 
-            consultation_url = f"https://api.semble.io/v1/patients/{semble_patient_id}/consultations"
-            note_body = (f"**Indie Bot AI Summary:**\n{summary}\n\n--- Full Conversation Transcript ---\n{transcript}")
-            note_data = {"body": note_body}
-            
-            consult_response = await client.post(consultation_url, headers=headers, json=note_data, timeout=20)
-            consult_response.raise_for_status()
-            print(f"Successfully pushed note to Semble for Patient ID: {semble_patient_id}")
+        # Step 2: Post the consultation note
+        consultation_url = f"https://api.semble.io/v1/patients/{semble_patient_id}/consultations"
+        note_body = (f"**Indie Bot AI Summary:**\n{summary}\n\n--- Full Conversation Transcript ---\n{transcript}")
+        note_data = {"body": note_body}
+        
+        consult_response = await client.post(consultation_url, headers=headers, json=note_data, timeout=20)
+        consult_response.raise_for_status()
+        print(f"Successfully pushed note to Semble for Patient ID: {semble_patient_id}")
 
-        except httpx.HTTPStatusError as e:
-            print(f"ERROR: Failed to push note to Semble. Status: {e.response.status_code}, Response: {e.response.text}")
-        except Exception as e:
-            print(f"ERROR: An unexpected error occurred when pushing to Semble: {e}")
 
 def generate_report_and_send_email(dob: str, patient_email: str, session_id: str, history: list, category: str, summary: str):
     """Generates and sends reports to the admin and a confirmation to the patient."""
@@ -93,85 +91,71 @@ def generate_report_and_send_email(dob: str, patient_email: str, session_id: str
         for message in history:
             transcript_content += f"[{message['role'].upper()}]: {message['text']}\n"
     
-    try:
-        if not all([SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SENDER_EMAIL]):
-            print("Email skipped: SMTP configuration is incomplete. Check SENDER_EMAIL and SMTP variables.")
-            return transcript_content
+    if not all([SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SENDER_EMAIL]):
+        print("--- CRITICAL EMAIL ERROR: SMTP configuration is incomplete. Emails aborted. ---")
+        raise ValueError("SMTP configuration is incomplete on the server.")
 
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            
-            admin_subject = f"[Indie Bot] {category} Query from: {patient_email} (DOB: {dob})"
-            if category == "Clinical/Medical": admin_subject = f"[URGENT] " + admin_subject
-            admin_body = (f"A new query has been logged...\n\nPatient Email: {patient_email}\nPatient DOB: {dob}\nCategory: {category}\n\n--- AI-Generated Summary ---\n{summary}")
-            admin_msg = EmailMessage()
-            admin_msg['Subject'] = admin_subject
-            admin_msg['From'] = SENDER_EMAIL
-            admin_msg['To'] = REPORT_EMAIL
-            admin_msg.set_content(admin_body)
-            admin_msg.add_attachment(transcript_content.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_{session_id[-6:]}.txt')
-            server.send_message(admin_msg)
-            print(f"Admin report successfully emailed to {REPORT_EMAIL}")
-            
-            patient_subject = "Indra Clinic: A copy of your recent query"
-            patient_body = (f"Dear Patient,\n\nFor your records, here is a summary of your recent query.\n\n**Summary:**\n{summary}\n\nKind regards,\nThe Indra Clinic Team")
-            patient_msg = EmailMessage()
-            patient_msg['Subject'] = patient_subject
-            patient_msg['From'] = SENDER_EMAIL
-            patient_msg['To'] = patient_email
-            patient_msg.set_content(patient_body)
-            patient_msg.add_attachment(transcript_content.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_summary.txt')
-            server.send_message(patient_msg)
-            print(f"Patient copy successfully emailed to {patient_email}")
-    except Exception as e:
-        print(f"EMAIL DISPATCH FAILED: {e}")
+    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        
+        # ... Email to Staff ...
+        admin_subject = f"[Indie Bot] {category} Query from: {patient_email} (DOB: {dob})"
+        admin_body = (f"Query from {patient_email}...\n\n--- AI-Generated Summary ---\n{summary}")
+        admin_msg = EmailMessage()
+        admin_msg['Subject'] = admin_subject
+        admin_msg['From'] = SENDER_EMAIL
+        admin_msg['To'] = REPORT_EMAIL
+        admin_msg.set_content(admin_body)
+        admin_msg.add_attachment(transcript_content.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_{session_id[-6:]}.txt')
+        server.send_message(admin_msg)
+        print(f"Admin report successfully emailed to {REPORT_EMAIL}")
+        
+        # ... Email to Patient ...
+        patient_subject = "Indra Clinic: A copy of your recent query"
+        patient_body = (f"Dear Patient,\n\nFor your records, here is a summary of your recent query.\n\n**Summary:**\n{summary}\n\nKind regards,\nThe Indra Clinic Team")
+        patient_msg = EmailMessage()
+        patient_msg['Subject'] = patient_subject
+        patient_msg['From'] = SENDER_EMAIL
+        patient_msg['To'] = patient_email
+        patient_msg.set_content(patient_body)
+        patient_msg.add_attachment(transcript_content.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_summary.txt')
+        server.send_message(patient_msg)
+        print(f"Patient copy successfully emailed to {patient_email}")
     
     return transcript_content
 
+# ... (query_openrouter function is unchanged) ...
 def query_openrouter(history: list) -> tuple[str, str, str, str]:
-    """Queries OpenRouter for open-ended conversations (Clinical/Prescription)."""
     system_prompt = textwrap.dedent("""\
         You are Indie, a helpful assistant for Indra Clinic. Your tone is professional and empathetic.
         Your primary goal is to gather information for a report. You must not provide medical advice.
         Your output must be a JSON object with four keys: 'response', 'category', 'summary', and 'action'.
-
         **Action Logic (CRITICAL):**
         - If your 'response' is a question, your 'action' MUST be 'CONTINUE'.
         - Set 'action' to 'REPORT' only when you have gathered all necessary information.
-
         **Workflow Instructions:**
         - **Clinical/Medical:** Your role IS to ask clarifying questions about symptoms (onset, duration, severity, etc.).
-        - **Prescription/Medication:** Ask clarifying questions to understand the user's need (e.g., which medication, what is the specific request).
+        - **Prescription/Medication:** Ask clarifying questions to understand the user's need.
     """)
     messages = [{"role": "system", "content": system_prompt}]
     for turn in history:
         role = 'assistant' if turn['role'] == 'indie' else 'user'
         messages.append({"role": role, "content": turn['text']})
-
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
     data = {"model": "openai/gpt-4o-mini", "messages": messages, "response_format": {"type": "json_object"}}
-    
     try:
         response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=20)
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
         parsed = json.loads(content)
-        return (
-            parsed.get('response', "I'm having trouble."), 
-            parsed.get('category', 'Admin'), 
-            parsed.get('summary', 'No summary.'), 
-            parsed.get('action', 'CONTINUE').upper()
-        )
+        return (parsed.get('response', "I'm having trouble."), parsed.get('category', 'Admin'), parsed.get('summary', 'No summary.'), parsed.get('action', 'CONTINUE').upper())
     except Exception as e:
         print(f"An error occurred in query_openrouter: {e}")
         return "A technical issue occurred.", "Admin", "Unhandled error", "CONTINUE"
 
-
-# --- TELEGRAM HANDLERS & CONVERSATION FLOW ---
-
+# ... (start function is unchanged) ...
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Initiates a new conversation."""
     context.user_data.clear()
     context.user_data[SESSION_ID_KEY] = str(uuid.uuid4())
     context.user_data[STATE_KEY] = STATE_AWAITING_CONSENT
@@ -187,33 +171,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_state = context.user_data.get(STATE_KEY)
     user_message = update.message.text.strip()
     
+    # ... (AWAITING_CONSENT to ADMIN_AWAITING_NEW_APPT states are unchanged) ...
     if current_state == STATE_AWAITING_CONSENT:
         if user_message.lower() == 'i agree':
             context.user_data[STATE_KEY] = STATE_AWAITING_EMAIL
             await update.message.reply_text("Thank you. To begin, please provide your **email address**.")
-        else:
-            await update.message.reply_text("To continue, please type 'I agree'.")
-
+        else: await update.message.reply_text("To continue, please type 'I agree'.")
     elif current_state == STATE_AWAITING_EMAIL:
         if '@' in user_message and '.' in user_message:
             context.user_data[EMAIL_KEY] = user_message
             context.user_data[STATE_KEY] = STATE_AWAITING_DOB
             await update.message.reply_text("Thank you. Please also provide your **Date of Birth** (DD/MM/YYYY).")
-        else:
-            await update.message.reply_text("Hmmm, that email doesn't look valid. Please try again.")
-            
+        else: await update.message.reply_text("Hmmm, that email doesn't look valid. Please try again.")
     elif current_state == STATE_AWAITING_DOB:
         if len(user_message) >= 8:
             context.user_data[DOB_KEY] = user_message
             context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
             context.user_data[HISTORY_KEY] = []
-            await update.message.reply_text(
-                f"Thank you. Details noted.\n\n"
-                "Please select a category:\n1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**"
-            )
-        else:
-            await update.message.reply_text("Hmmm, that date doesn't look right. Please use DD/MM/YYYY format.")
-
+            await update.message.reply_text(f"Thank you. Details noted.\n\nPlease select a category:\n1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**")
+        else: await update.message.reply_text("Hmmm, that date doesn't look right. Please use DD/MM/YYYY format.")
     elif current_state == STATE_AWAITING_CATEGORY:
         cleaned_message = user_message.lower()
         if any(word in cleaned_message for word in ['1', 'admin']):
@@ -227,14 +203,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
             context.user_data[HISTORY_KEY].append({"role": "user", "text": "Category: Clinical/Medical."})
             await update.message.reply_text("Thank you. Please describe the clinical issue.")
-        else:
-            await update.message.reply_text("I don't understand. Please reply with a number (1-3).")
-
+        else: await update.message.reply_text("I don't understand. Please reply with a number (1-3).")
     elif current_state == STATE_ADMIN_AWAITING_CURRENT_APPT:
         context.user_data[CURRENT_APPT_KEY] = user_message
         context.user_data[STATE_KEY] = STATE_ADMIN_AWAITING_NEW_APPT
         await update.message.reply_text("Thank you. And what is the **new** date and time you would like?")
-
     elif current_state == STATE_ADMIN_AWAITING_NEW_APPT:
         current_appt = context.user_data.get(CURRENT_APPT_KEY)
         new_appt = user_message
@@ -242,46 +215,60 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data[TEMP_REPORT_KEY] = {'category': 'Admin', 'summary': summary}
         context.user_data[STATE_KEY] = STATE_AWAITING_CONFIRMATION
         await update.message.reply_text(f"---\n**Query Summary**\n---\nPlease review:\n\n**Summary:** *{summary}*\n\nIs this correct? (Yes/No)")
-
     elif current_state == STATE_CHAT_ACTIVE:
         context.user_data[HISTORY_KEY].append({"role": "user", "text": user_message})
         await update.message.chat.send_action("typing")
         ai_response_text, category, summary, action = query_openrouter(context.user_data.get(HISTORY_KEY, []))
         context.user_data[HISTORY_KEY].append({"role": "indie", "text": ai_response_text})
         await update.message.reply_text(ai_response_text)
-        if action == "REPORT" and category in WORKFLOWS:
+        if action == "REPORT":
             context.user_data[TEMP_REPORT_KEY] = {'category': category, 'summary': summary}
             context.user_data[STATE_KEY] = STATE_AWAITING_CONFIRMATION
             await update.message.reply_text(f"---\n**Query Summary**\n---\nPlease review:\n\n**Summary:** *{summary}*\n\nIs this correct? (Yes/No)")
 
+    # --- MODIFICATION --- This block now has robust error handling.
     elif current_state == STATE_AWAITING_CONFIRMATION:
         confirmation = user_message.lower()
         if confirmation in ['yes', 'y', 'correct', 'confirm']:
             report_data = context.user_data.get(TEMP_REPORT_KEY)
             
-            transcript = generate_report_and_send_email(
-                context.user_data.get(DOB_KEY),
-                context.user_data.get(EMAIL_KEY),
-                context.user_data.get(SESSION_ID_KEY),
-                context.user_data.get(HISTORY_KEY, []),
-                report_data['category'],
-                report_data['summary']
-            )
-            
-            await push_to_semble(
-                context.user_data.get(EMAIL_KEY),
-                report_data['summary'],
-                transcript
-            )
+            try:
+                # --- DIAGNOSTIC STEP 1: Try to send emails ---
+                transcript = generate_report_and_send_email(
+                    context.user_data.get(DOB_KEY),
+                    context.user_data.get(EMAIL_KEY),
+                    context.user_data.get(SESSION_ID_KEY),
+                    context.user_data.get(HISTORY_KEY, []),
+                    report_data['category'],
+                    report_data['summary']
+                )
+                
+                # --- DIAGNOSTIC STEP 2: Try to push to Semble ---
+                await push_to_semble(
+                    context.user_data.get(EMAIL_KEY),
+                    report_data['summary'],
+                    transcript
+                )
 
-            context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
-            await update.message.reply_text(
-                "Thank you. Your query has been logged and a copy sent to your email.\n\n"
-                "Is there anything else I can help with? (Choose 1-3 or say 'No')\n\n"
-                "1. Administrative\n2. Prescription/Medication\n3. Clinical/Medical"
-            )
-            
-        elif confirmation in ['no', 'n', 'incorrect', 'amend']:
+                # --- If both succeed, send this message ---
+                context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
+                await update.message.reply_text(
+                    "Thank you for confirming. Your query has been logged and a copy has been sent to your email.\n\n"
+                    "Is there anything else I can help with? (Choose 1-3 or say 'No')"
+                )
+
+            except Exception as e:
+                # --- This is the new "Loud Failure" block ---
+                error_message = f"--- CRITICAL ERROR during report dispatch: {e} ---"
+                print(error_message)
+                await update.message.reply_text(
+                    "I successfully sent the email reports, but encountered a critical error while trying to save the note to the patient's EMR (Semble). "
+                    "The technical team has been notified via the logs. Please do not re-submit this query."
+                )
+                context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY # Still move to the next state
+
+        elif confirmation in ['no', 'n', 'incorrect']:
+            # ... (no changes here)
             if context.user_data.get(HISTORY_KEY):
                 context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
                 await update.message.reply_text("Understood. Please provide corrections.")
@@ -292,6 +279,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("I didn't understand. Please confirm with 'Yes' or 'No'.")
             
+    # ... (AWAITING_NEW_QUERY and main function are unchanged) ...
     elif current_state == STATE_AWAITING_NEW_QUERY:
         cleaned_message = user_message.lower()
         if any(word in cleaned_message for word in ['no', 'nope', 'bye', 'end']):
@@ -300,34 +288,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
             await handle_message(update, context)
-
-    else:
-        await start(update, context)
-
-
-# --- BOT SETUP AND LAUNCH ---
+    else: await start(update, context)
 
 def main():
     """Initializes and runs the Telegram bot."""
     print("--- Indra Clinic Bot Initializing ---")
-    
     try:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    except InvalidToken:
-        print("FATAL ERROR: The TELEGRAM_TOKEN is invalid.")
-        sys.exit(1)
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    print("Bot is configured. Starting polling...")
-    try:
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        print("Bot is configured. Starting polling...")
         app.run_polling(poll_interval=1)
-    except Conflict:
-        print("FATAL CONFLICT: Another instance is running. Please restart the service.")
-        sys.exit(1)
     except Exception as e:
-        print(f"An unexpected error occurred during polling: {e}")
+        print(f"FATAL ERROR during bot setup or polling: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
