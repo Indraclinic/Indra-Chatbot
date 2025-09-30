@@ -49,23 +49,15 @@ STATE_AWAITING_NEW_QUERY = 'awaiting_new_query'
 WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
 
 
-# --- MODIFICATION --- Corrected the Semble API endpoint URL
 async def push_to_semble(patient_id: str, dob: str, patient_email: str, summary: str, transcript: str):
     """Connects to the Semble API and pushes a new consultation note."""
     if not SEMBLE_API_KEY:
         print("SEMBLE_API_KEY environment variable not set. Skipping EMR push.")
         return
 
-    # According to the docs, the endpoint is /patients/{patientId}/consultations
     SEMBLE_API_URL = f"https://api.semble.io/v1/patients/{patient_id}/consultations"
-    headers = {
-        "Authorization": f"Bearer {SEMBLE_API_KEY}",
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {SEMBLE_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
     note_body = (f"**Indie Bot AI Summary:**\n{summary}\n\n--- Full Conversation Transcript ---\n{transcript}")
-    
-    # The payload only needs the body, as the patient ID is in the URL
     note_data = {"body": note_body}
     
     async with httpx.AsyncClient() as client:
@@ -144,19 +136,31 @@ def generate_report_and_send_email(patient_id: str, dob: str, patient_email: str
 # --- AI / OPENROUTER FUNCTIONS ---
 def query_openrouter(history: list) -> tuple[str, str, str, str]:
     """Queries OpenRouter with an anonymised conversation history."""
+    # --- MODIFICATION --- Added very specific rules for Admin tasks.
     system_prompt = textwrap.dedent("""\
-        You are Indie, a helpful assistant for Indra Clinic, a UK-based medical cannabis clinic.
-        Your tone must be professional, empathetic, and clear. Use appropriate medical terminology but avoid complex jargon.
-        You must not provide medical advice. Your output must be a JSON object with four keys: 'response', 'category', 'summary', and 'action'.
+        You are Indie, a helpful assistant for Indra Clinic. Your tone is professional and empathetic.
+        Your primary goal is to gather information for a report. You must not provide medical advice.
+        Your output must be a JSON object with four keys: 'response', 'category', 'summary', and 'action'.
 
         **Action Logic (CRITICAL):**
-        - If your 'response' to the user is a question to gather more details, your 'action' MUST be 'CONTINUE'.
-        - Only set 'action' to 'REPORT' when you have gathered all necessary information and are providing a final statement, not a question.
+        - If your 'response' is a question, your 'action' MUST be 'CONTINUE'.
+        - Only set 'action' to 'REPORT' when you have all necessary information and are providing a final statement, not a question.
 
-        **Information Gathering vs. Giving Advice:**
-        - **Giving Advice (Forbidden):** Never tell the user what to do about their medical condition. Do not suggest treatments or interpret symptoms.
-        - **Gathering Information (Required):** When a patient mentions a clinical issue (e.g., 'itchy foot', 'headache'), your role IS to ask clarifying questions to understand it. Ask about onset, duration, severity, location, etc.
+        **Workflow-Specific Instructions (CRITICAL):**
+        - **Admin - Appointment Change:** Your ONLY goal is to collect two pieces of information: 1. The date/time of the CURRENT appointment. 2. The date/time of the DESIRED new appointment.
+            - Do NOT ask for the patient's name, reference numbers, or clinician names. Their identity is already verified.
+            - Do NOT pretend to check for availability or confirm the booking. Just gather the two dates/times.
+            - Once you have the current and desired times, your job is done; set 'action' to 'REPORT'.
+        - **Clinical/Medical:** Your role IS to ask clarifying questions about symptoms (onset, duration, severity, location, etc.). This is essential data collection.
+        - **General Questions:** You can answer general questions based ONLY on the official clinic guidance below.
+
+        --- OFFICIAL PATIENT GUIDANCE ---
+        - **Medication Usage:** Flower must be vaporised (180-210°C). Vapes are one short puff. Wait 5 mins between doses for both.
+        - **Side Effects:** For mild symptoms (dizzy, sleepy), rest and contact the clinic. For severe symptoms (chest pain, trouble breathing), call 999 immediately.
+        - **Safety:** Driving while impaired is illegal. Avoid alcohol. Store medicine securely.
+        --- END OF GUIDANCE ---
     """)
+
     messages = [{"role": "system", "content": system_prompt}]
     for turn in history:
         role = 'assistant' if turn['role'] == 'indie' else 'user'
