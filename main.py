@@ -49,12 +49,12 @@ WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
 
 
 def load_system_prompt():
-    """Loads the system prompt from an external file to prevent syntax errors."""
+    """Loads the system prompt from an external file."""
     try:
         with open("system_prompt.txt", "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        print("--- FATAL ERROR: system_prompt.txt not found! Using a basic fallback. ---")
+        print("--- FATAL ERROR: system_prompt.txt not found! ---")
         return "You are a helpful clinic assistant."
 
 SYSTEM_PROMPT = load_system_prompt()
@@ -175,7 +175,6 @@ async def query_openrouter(history: list) -> tuple[str, str, str, str]:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Initiates a new conversation."""
     context.user_data.clear()
     context.user_data[SESSION_ID_KEY] = str(uuid.uuid4())
     context.user_data[STATE_KEY] = STATE_AWAITING_CONSENT
@@ -187,7 +186,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(consent_message)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """The main state machine for handling all user messages."""
     current_state = context.user_data.get(STATE_KEY)
     user_message = update.message.text.strip()
     
@@ -196,14 +194,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[STATE_KEY] = STATE_AWAITING_EMAIL
             await update.message.reply_text("Thank you. To begin, please provide your **email address**.")
         else: await update.message.reply_text("To continue, please type 'I agree'.")
-
     elif current_state == STATE_AWAITING_EMAIL:
         if '@' in user_message and '.' in user_message:
             context.user_data[EMAIL_KEY] = user_message
             context.user_data[STATE_KEY] = STATE_AWAITING_DOB
             await update.message.reply_text("Thank you. Please also provide your **Date of Birth** (DD/MM/YYYY).")
         else: await update.message.reply_text("Hmmm, that email doesn't look valid. Please try again.")
-            
     elif current_state == STATE_AWAITING_DOB:
         if len(user_message) >= 8:
             context.user_data[DOB_KEY] = user_message
@@ -211,7 +207,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[HISTORY_KEY] = []
             await update.message.reply_text(f"Thank you. Details noted.\n\nPlease select a category:\n1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**")
         else: await update.message.reply_text("Hmmm, that date doesn't look right. Please use DD/MM/YYYY format.")
-
     elif current_state == STATE_AWAITING_CATEGORY:
         cleaned_message = user_message.lower()
         if any(word in cleaned_message for word in ['1', 'admin']):
@@ -226,12 +221,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[HISTORY_KEY].append({"role": "user", "text": "Category: Clinical/Medical."})
             await update.message.reply_text("Thank you. Please describe the clinical issue.")
         else: await update.message.reply_text("I don't understand. Please reply with a number (1-3).")
-
     elif current_state == STATE_ADMIN_AWAITING_CURRENT_APPT:
         context.user_data[CURRENT_APPT_KEY] = user_message
         context.user_data[STATE_KEY] = STATE_ADMIN_AWAITING_NEW_APPT
         await update.message.reply_text("Thank you. And what is the **new** date and time you would like?")
-
     elif current_state == STATE_ADMIN_AWAITING_NEW_APPT:
         current_appt = context.user_data.get(CURRENT_APPT_KEY)
         new_appt = user_message
@@ -239,7 +232,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data[TEMP_REPORT_KEY] = {'category': 'Admin', 'summary': summary}
         context.user_data[STATE_KEY] = STATE_AWAITING_CONFIRMATION
         await update.message.reply_text(f"---\n**Query Summary**\n---\nPlease review:\n\n**Summary:** *{summary}*\n\nIs this correct? (Yes/No)")
-
     elif current_state == STATE_CHAT_ACTIVE:
         context.user_data[HISTORY_KEY].append({"role": "user", "text": user_message})
         await update.message.chat.send_action("typing")
@@ -250,13 +242,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[TEMP_REPORT_KEY] = {'category': category, 'summary': summary}
             context.user_data[STATE_KEY] = STATE_AWAITING_CONFIRMATION
             await update.message.reply_text(f"---\n**Query Summary**\n---\nPlease review:\n\n**Summary:** *{summary}*\n\nIs this correct? (Yes/No)")
-
     elif current_state == STATE_AWAITING_CONFIRMATION:
         confirmation = user_message.lower()
         if confirmation in ['yes', 'y', 'correct', 'confirm']:
             report_data = context.user_data.get(TEMP_REPORT_KEY)
             transcript = ""
             try:
+                # Run the blocking email function in a non-blocking way
                 transcript = await context.application.to_thread(
                     generate_report_and_send_email,
                     context.user_data.get(DOB_KEY),
