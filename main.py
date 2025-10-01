@@ -63,19 +63,23 @@ def load_system_prompt():
 
 SYSTEM_PROMPT = load_system_prompt()
 
-async def push_to_semble(patient_email: str, category: str, summary: str, transcript: str):
-    """Finds a patient by email using GraphQL, then pushes a new FreeTextRecord."""
+# --- CHANGE: Function signature updated to accept patient_dob for verification ---
+async def push_to_semble(patient_email: str, patient_dob: str, category: str, summary: str, transcript: str):
+    """Finds a patient by email, verifies with DOB, then pushes a new FreeTextRecord."""
     if not SEMBLE_API_KEY:
         raise ValueError("Semble API Key is not configured on the server.")
 
     SEMBLE_GRAPHQL_URL = "https://open.semble.io/graphql"
-    # --- FIX: Reverted to using 'x-token' as per your previous working code ---
     headers = {"x-token": SEMBLE_API_KEY, "Content-Type": "application/json"}
     
+    # --- CHANGE: The GraphQL query now also requests the dateOfBirth for verification ---
     find_patient_query = """
       query FindPatientByEmail($search: String!) {
         patients(search: $search) {
-          data { id }
+          data { 
+            id
+            dateOfBirth
+          }
         }
       }
     """
@@ -87,11 +91,30 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
         
         response_data = search_response.json()
         if response_data.get("errors"): raise Exception(f"GraphQL error during patient search: {response_data['errors']}")
-        patients = response_data.get('data', {}).get('patients', {}).get('data', [])
-        if not patients: raise Exception(f"No patient found in Semble with email: {patient_email}")
         
-        semble_patient_id = patients[0]['id']
-        logger.info(f"Found Semble Patient ID: {semble_patient_id}")
+        patients = response_data.get('data', {}).get('patients', {}).get('data', [])
+        if not patients:
+            raise Exception(f"No patient found in Semble with email: {patient_email}")
+
+        # --- CHANGE: DOB verification logic to find the correct patient record ---
+        try:
+            # Reformat user's DOB from DD/MM/YYYY to YYYY-MM-DD to match Semble's likely format
+            dob_parts = patient_dob.split('/')
+            formatted_dob_for_match = f"{dob_parts[2]}-{dob_parts[1]}-{dob_parts[0]}"
+        except (IndexError, AttributeError):
+            raise ValueError(f"Invalid DOB format provided for verification: {patient_dob}. Expected DD/MM/YYYY.")
+        
+        matched_patient = None
+        for patient in patients:
+            if patient.get('dateOfBirth') == formatted_dob_for_match:
+                matched_patient = patient
+                break
+        
+        if not matched_patient:
+            raise Exception(f"A record with email '{patient_email}' was found, but the Date of Birth did not match.")
+
+        semble_patient_id = matched_patient['id']
+        logger.info(f"Found and verified Semble Patient ID: {semble_patient_id}")
 
         create_record_mutation = """
             mutation CreateRecord($recordData: CreateFreeTextRecordDataInput!) {
@@ -180,7 +203,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await asyncio.sleep(1.5)
     await update.message.reply_text("This service is in beta. If you prefer, email us at drT@indra.clinic.")
     await asyncio.sleep(1.5)
-    consent_message = ("Please read our privacy notice:\n\n**Your Privacy**\n• **Verification:** We use your email and DOB to link this chat to your record.\n• **AI Assistance:** Your anonymised chat is processed by an AI.\n• **Medical Record:** A summary will be added to your Semble EMR file.\n• **Your Records:** A copy will be emailed to you.\n\nTo proceed, type **'I agree'**.")
+    
+    # --- CHANGE: Expanded privacy notice for better clarity ---
+    consent_message = (
+        "Please review our data privacy information before we begin:\n\n"
+        "**Data Handling & Your Privacy**\n"
+        "• **Purpose:** The information you provide is used solely for administrative and clinical support to manage your query.\n"
+        "• **Verification:** We will ask for your email and Date of Birth. This is to securely identify you and ensure the information is correctly added to your medical record.\n"
+        "• **AI Assistance:** This chat uses a secure, third-party AI to help understand your request and summarize the conversation. Your data is not used for training the AI model.\n"
+        "• **Medical Record:** A summary of this conversation will be permanently added to your patient file on our Electronic Medical Record system (Semble).\n"
+        "• **Confirmation:** For your own records, a full transcript of this conversation will be securely emailed to you upon completion.\n\n"
+        "To confirm you have read and understood this, please type **'I agree'** to proceed."
+    )
     await update.message.reply_text(consent_message)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -192,21 +226,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if current_state == STATE_AWAITING_CONSENT:
         if user_message.lower() == 'i agree':
             context.user_data[STATE_KEY] = STATE_AWAITING_EMAIL
-            await update.message.reply_text("Thank you. To begin, please provide your **email address**.")
+            # --- CHANGE: Clarified which email address is needed ---
+            await update.message.reply_text("Thank you. To begin, please provide the **email address you registered with Indra Clinic**.")
         else: await update.message.reply_text("To continue, please type 'I agree'.")
     elif current_state == STATE_AWAITING_EMAIL:
         if '@' in user_message and '.' in user_message:
             context.user_data[EMAIL_KEY] = user_message
             context.user_data[STATE_KEY] = STATE_AWAITING_DOB
             await update.message.reply_text("Thank you. Please also provide your **Date of Birth** (DD/MM/YYYY).")
-        else: await update.message.reply_text("Hmmm, that email doesn't look valid. Please try again.")
+        else: await update.message.reply_text("That doesn't look like a valid email. Please try again.")
     elif current_state == STATE_AWAITING_DOB:
         if len(user_message) >= 8:
             context.user_data[DOB_KEY] = user_message
             context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
             context.user_data[HISTORY_KEY] = []
             await update.message.reply_text(f"Thank you. Details noted.\n\nPlease select a category:\n1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**")
-        else: await update.message.reply_text("Hmmm, that date doesn't look right. Please use DD/MM/YYYY format.")
+        else: await update.message.reply_text("That date doesn't look right. Please use the DD/MM/YYYY format.")
     elif current_state == STATE_AWAITING_CATEGORY:
         cleaned_message = user_message.lower()
         if any(word in cleaned_message for word in ['1', 'admin']):
@@ -257,8 +292,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     report_data['category'],
                     report_data['summary']
                 )
+                # --- CHANGE: Pass the DOB to the Semble function for verification ---
                 await push_to_semble(
                     context.user_data.get(EMAIL_KEY),
+                    context.user_data.get(DOB_KEY),
                     report_data['category'],
                     report_data['summary'],
                     transcript
