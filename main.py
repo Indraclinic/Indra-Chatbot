@@ -49,8 +49,11 @@ STATE_AWAITING_CATEGORY = 'awaiting_category'
 STATE_CHAT_ACTIVE = 'chat_active'
 STATE_AWAITING_CONFIRMATION = 'awaiting_confirmation'
 STATE_AWAITING_NEW_QUERY = 'awaiting_new_query'
+# --- CHANGE: Re-added states for the hard-coded admin workflow ---
+STATE_ADMIN_SUB_CATEGORY = 'admin_sub_category'
 STATE_ADMIN_AWAITING_CURRENT_APPT = 'admin_awaiting_current_appt'
 STATE_ADMIN_AWAITING_NEW_APPT = 'admin_awaiting_new_appt'
+
 
 def load_system_prompt():
     """Loads the system prompt from an external file."""
@@ -184,7 +187,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data[SESSION_ID_KEY] = str(uuid.uuid4())
     context.user_data[STATE_KEY] = STATE_AWAITING_CONSENT
     
-    # --- CHANGE: Updated the welcome message to be more specific about the bot's purpose ---
     await update.message.reply_text(
         "👋 Welcome to Indra Clinic! I’m Indie, your digital assistant.\n\n"
         "**Purpose of this Chat:** While I cannot provide medical advice, I can securely gather information "
@@ -233,9 +235,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else: await update.message.reply_text("That date doesn't look right. Please use the DD/MM/YYYY format.")
     elif current_state == STATE_AWAITING_CATEGORY:
         cleaned_message = user_message.lower()
+        # --- CHANGE: 'Admin' option now goes to a new sub-category menu ---
         if any(word in cleaned_message for word in ['1', 'admin']):
-            context.user_data[STATE_KEY] = STATE_ADMIN_AWAITING_CURRENT_APPT
-            await update.message.reply_text("Understood. To change an appointment, what is the date and time of your **current** appointment?")
+            context.user_data[STATE_KEY] = STATE_ADMIN_SUB_CATEGORY
+            await update.message.reply_text("Understood. Is your administrative query about **Appointments** or **Something else**?")
         elif any(word in cleaned_message for word in ['2', 'prescription']):
             context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
             context.user_data[HISTORY_KEY].append({"role": "user", "text": "Category: Prescription/Medication."})
@@ -245,17 +248,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[HISTORY_KEY].append({"role": "user", "text": "Category: Clinical/Medical."})
             await update.message.reply_text("Thank you. Please describe the clinical issue.")
         else: await update.message.reply_text("I don't understand. Please reply with a number (1-3).")
+    
+    # --- CHANGE: Added new state to handle the Admin sub-category choice ---
+    elif current_state == STATE_ADMIN_SUB_CATEGORY:
+        cleaned_message = user_message.lower()
+        if 'appointment' in cleaned_message:
+            context.user_data[STATE_KEY] = STATE_ADMIN_AWAITING_CURRENT_APPT
+            await update.message.reply_text("To change an appointment, what is the date and time of your **current** appointment?")
+        elif 'something else' in cleaned_message or 'else' in cleaned_message:
+            context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
+            context.user_data[HISTORY_KEY].append({"role": "user", "text": "Category: Administrative (Other)."})
+            await update.message.reply_text("Thank you. Please describe your administrative request.")
+        else:
+            await update.message.reply_text("I didn't understand. Please reply with 'Appointments' or 'Something else'.")
+
+    # --- CHANGE: Re-added the hard-coded workflow for changing appointments ---
     elif current_state == STATE_ADMIN_AWAITING_CURRENT_APPT:
         context.user_data[CURRENT_APPT_KEY] = user_message
         context.user_data[STATE_KEY] = STATE_ADMIN_AWAITING_NEW_APPT
         await update.message.reply_text("Thank you. And what is the **new** date and time you would like?")
     elif current_state == STATE_ADMIN_AWAITING_NEW_APPT:
-        current_appt = context.user_data.get(CURRENT_APPT_KEY)
+        current_appt = context.user_data.get(CURRENT_APPT_KEY, 'Not provided')
         new_appt = user_message
         summary = f"Patient requests to change their appointment from '{current_appt}' to '{new_appt}'."
         context.user_data[TEMP_REPORT_KEY] = {'category': 'Admin', 'summary': summary}
         context.user_data[STATE_KEY] = STATE_AWAITING_CONFIRMATION
+        # Ensure chat history is empty so it uses the guided workflow format for the transcript
+        context.user_data[HISTORY_KEY] = []
         await update.message.reply_text(f"---\n**Query Summary**\n---\nPlease review:\n\n**Summary:** *{summary}*\n\nIs this correct? (Yes/No)")
+
     elif current_state == STATE_CHAT_ACTIVE:
         context.user_data[HISTORY_KEY].append({"role": "user", "text": user_message})
         await update.message.chat.send_action("typing")
@@ -299,12 +320,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "A critical error occurred while finalising your report. The technical team has been notified. Please contact the clinic directly.")
                 context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
         elif confirmation in ['no', 'n', 'incorrect']:
-            if context.user_data.get(HISTORY_KEY):
+            # If the user says 'no' after a hard-coded workflow, they need to start again with a category.
+            if not context.user_data.get(HISTORY_KEY):
+                 context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
+                 await update.message.reply_text("Understood. Let's restart. Please select a category:\n1. Administrative\n2. Prescription/Medication\n3. Clinical/Medical")
+            else: # If it was an AI chat, they can provide corrections.
                 context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
                 await update.message.reply_text("Understood. Please provide corrections.")
-            else:
-                context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
-                await update.message.reply_text("Understood. Let's start over.\nPlease select a category:\n1. Admin\n2. Prescription\n3. Clinical")
         else:
             await update.message.reply_text("I didn't understand. Please confirm with 'Yes' or 'No'.")
     elif current_state == STATE_AWAITING_NEW_QUERY:
