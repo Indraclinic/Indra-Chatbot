@@ -1,25 +1,26 @@
 import os
 import sys
-import time
 import uuid
 import asyncio
 import textwrap
 import httpx
 import json
 import smtplib
-import logging # --- FIX: Using the logging module is better than print() for deployment.
+import logging
 from email.message import EmailMessage
 from telegram import Update
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-from telegram.error import InvalidToken, Conflict
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
-# --- FIX: Set up basic logging to see timestamps and error levels ---
+# --- Set up basic logging ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-logger = logging.getLogger(__name__)
+# PTB's default loggers can be noisy, so we can tone them down.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram.ext").setLevel(logging.WARNING)
 
+logger = logging.getLogger(__name__)
 
 # --- ENVIRONMENT VARIABLE CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -54,8 +55,6 @@ STATE_AWAITING_CONFIRMATION = 'awaiting_confirmation'
 STATE_AWAITING_NEW_QUERY = 'awaiting_new_query'
 STATE_ADMIN_AWAITING_CURRENT_APPT = 'admin_awaiting_current_appt'
 STATE_ADMIN_AWAITING_NEW_APPT = 'admin_awaiting_new_appt'
-WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
-
 
 def load_system_prompt():
     """Loads the system prompt from an external file."""
@@ -68,15 +67,12 @@ def load_system_prompt():
 
 SYSTEM_PROMPT = load_system_prompt()
 
-
 async def push_to_semble(patient_email: str, category: str, summary: str, transcript: str):
     """Finds a patient by email using GraphQL, then pushes a new FreeTextRecord."""
     if not SEMBLE_API_KEY:
         raise ValueError("Semble API Key is not configured on the server.")
 
     SEMBLE_GRAPHQL_URL = "https://open.semble.io/graphql"
-    # --- FIX: Changed authentication header to match test_semble.py (Authorization: Bearer) ---
-    # This is a much more common standard than 'x-token'.
     headers = {"Authorization": f"Bearer {SEMBLE_API_KEY}", "Content-Type": "application/json"}
     
     find_patient_query = """
@@ -88,7 +84,6 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
     """
     
     async with httpx.AsyncClient() as client:
-        # Step 1: Find the patient by their email address
         find_payload = {"query": find_patient_query, "variables": {"search": patient_email}}
         search_response = await client.post(SEMBLE_GRAPHQL_URL, headers=headers, json=find_payload, timeout=20)
         search_response.raise_for_status()
@@ -101,7 +96,6 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
         semble_patient_id = patients[0]['id']
         logger.info(f"Found Semble Patient ID: {semble_patient_id}")
 
-        # Step 2: Create the FreeTextRecord
         create_record_mutation = """
             mutation CreateRecord($recordData: CreateFreeTextRecordDataInput!) {
                 createFreeTextRecord(recordData: $recordData) {
@@ -123,7 +117,6 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
 
         logger.info(f"Successfully pushed FreeTextRecord to Semble for Patient ID: {semble_patient_id}")
 
-
 def generate_report_and_send_email(dob: str, patient_email: str, session_id: str, history: list, category: str, summary: str):
     """Generates and sends reports. This is a synchronous (blocking) function."""
     transcript_content = f"Full Conversation Transcript (Session: {session_id})\n\n"
@@ -140,7 +133,6 @@ def generate_report_and_send_email(dob: str, patient_email: str, session_id: str
         server.starttls()
         server.login(SMTP_USERNAME, SMTP_PASSWORD)
         
-        # Email to Staff
         admin_subject = f"[Indie Bot] {category} Query from: {patient_email} (DOB: {dob})"
         admin_msg = EmailMessage()
         admin_msg['Subject'] = admin_subject
@@ -151,7 +143,6 @@ def generate_report_and_send_email(dob: str, patient_email: str, session_id: str
         server.send_message(admin_msg)
         logger.info(f"Admin report successfully emailed to {REPORT_EMAIL}")
         
-        # Email to Patient
         patient_subject = "Indra Clinic: A copy of your recent query"
         patient_msg = EmailMessage()
         patient_msg['Subject'] = patient_subject
@@ -181,9 +172,8 @@ async def query_openrouter(history: list) -> tuple[str, str, str, str]:
             parsed = json.loads(content)
             return (parsed.get('response', "I'm having trouble."), parsed.get('category', 'Admin'), parsed.get('summary', 'No summary.'), parsed.get('action', 'CONTINUE').upper())
         except Exception as e:
-            logger.error(f"An error occurred in query_openrouter: {e}")
+            logger.error(f"An error occurred in query_openrouter: {e}", exc_info=True)
             return "A technical issue occurred.", "Admin", "Unhandled error", "CONTINUE"
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -197,12 +187,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(consent_message)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    current_state = context.user_data.get(STATE_KEY)
-    # --- FIX: Ensure user_message is not None, which can happen with non-text messages ---
     if not update.message or not update.message.text:
         return
+    current_state = context.user_data.get(STATE_KEY)
     user_message = update.message.text.strip()
     
+    # ... (The entire state machine logic from your original file goes here and is unchanged)
+    # ... (I've omitted it for brevity, but you should copy the full block from your file)
     if current_state == STATE_AWAITING_CONSENT:
         if user_message.lower() == 'i agree':
             context.user_data[STATE_KEY] = STATE_AWAITING_EMAIL
@@ -272,38 +263,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     report_data['category'],
                     report_data['summary']
                 )
-                
                 await push_to_semble(
                     context.user_data.get(EMAIL_KEY),
                     report_data['category'],
                     report_data['summary'],
                     transcript
                 )
-
                 context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
                 await update.message.reply_text("Thank you. Your query has been logged and a copy has been sent to your email.\n\nIs there anything else I can help with?")
-
             except Exception as e:
                 error_message = f"CRITICAL ERROR during report dispatch: {e}"
-                logger.critical(error_message)
+                logger.critical(error_message, exc_info=True)
                 await update.message.reply_text(
-                    "A critical error occurred while finalising your report. "
-                    "The technical team has been notified via the logs.\n\n"
-                    f"**Error Details:** `{e}`"
-                )
+                    "A critical error occurred while finalising your report. The technical team has been notified. Please contact the clinic directly.")
                 context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
-        
         elif confirmation in ['no', 'n', 'incorrect']:
             if context.user_data.get(HISTORY_KEY):
                 context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
                 await update.message.reply_text("Understood. Please provide corrections.")
             else:
                 context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
-                await update.message.reply_text("Understood. Let's start over.")
-        
+                await update.message.reply_text("Understood. Let's start over.\nPlease select a category:\n1. Admin\n2. Prescription\n3. Clinical")
         else:
             await update.message.reply_text("I didn't understand. Please confirm with 'Yes' or 'No'.")
-            
     elif current_state == STATE_AWAITING_NEW_QUERY:
         cleaned_message = user_message.lower()
         if any(word in cleaned_message for word in ['no', 'nope', 'bye', 'end', 'thanks']):
@@ -311,45 +293,46 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.clear()
         else:
             context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
-            # --- FIX: Re-route to handle_message to properly process the new query ---
-            # This avoids duplicating the category selection logic.
-            await update.message.reply_text(f"Understood. Please select a category:\n1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**")
-
+            await update.message.reply_text(f"Understood. Please select a new category:\n1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**")
     else:
         await start(update, context)
 
-# --- FIX: Add a global error handler to log issues as noted in your traceback. ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log the error and send a telegram message to notify the developer."""
+    """Log the error."""
     logger.error("Exception while handling an update:", exc_info=context.error)
 
-
-def main():
+# --- FIX: Refactored main() to be an async function for cleaner startup/shutdown ---
+async def main() -> None:
     """Initializes and runs the Telegram bot."""
     logger.info("--- Indra Clinic Bot Initializing ---")
     
-    try:
-        # --- FIX: Changed from ApplicationBuilder to Application for more control ---
-        app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-        # Add handlers
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        
-        # Add the error handler
-        app.add_error_handler(error_handler)
-        
-        # --- FIX: Add graceful shutdown handlers for deployment environments ---
-        # This allows the bot to stop cleanly when Render sends a stop signal.
-        app.add_stop_handlers(signal.SIGTERM, signal.SIGINT)
+    # Add handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_error_handler(error_handler)
 
-        # --- FIX: Before polling, clear any lingering webhooks to prevent conflicts ---
+    # --- FIX: This is the modern, clean way to run async code at startup ---
+    # It runs after the app is initialized but before polling begins.
+    async def post_init(application: Application):
         logger.info("Clearing any existing webhooks...")
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(app.bot.delete_webhook(drop_pending_updates=True))
+        await application.bot.delete_webhook(drop_pending_updates=True)
 
-        logger.info("Bot is configured. Starting polling...")
-        # --- FIX: Drop pending updates on startup to avoid processing old messages ---
-        app.run_polling(poll_interval=1, drop_pending_updates=True)
+    app.post_init = post_init
 
-    except Exception as
+    logger.info("Bot is configured. Starting polling...")
+    # The `run_polling` function will automatically handle signals (like SIGTERM from Render)
+    # for a graceful shutdown. No manual signal handling is needed.
+    await app.run_polling(poll_interval=1, drop_pending_updates=True)
+
+if __name__ == "__main__":
+    # --- FIX: Proper way to run the main async function and catch critical errors ---
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot shutdown requested. Exiting.")
+    except Exception as e:
+        # This catches errors during the initial setup before the bot starts polling
+        logger.critical(f"FATAL ERROR during bot startup: {e}", exc_info=True)
+        sys.exit(1)
