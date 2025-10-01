@@ -2,7 +2,6 @@ import os
 import sys
 import uuid
 import asyncio
-import textwrap
 import httpx
 import json
 import smtplib
@@ -16,10 +15,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-# PTB's default loggers can be noisy, so we can tone them down.
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("telegram.ext").setLevel(logging.WARNING)
-
 logger = logging.getLogger(__name__)
 
 # --- ENVIRONMENT VARIABLE CONFIGURATION ---
@@ -193,7 +189,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text.strip()
     
     # ... (The entire state machine logic from your original file goes here and is unchanged)
-    # ... (I've omitted it for brevity, but you should copy the full block from your file)
     if current_state == STATE_AWAITING_CONSENT:
         if user_message.lower() == 'i agree':
             context.user_data[STATE_KEY] = STATE_AWAITING_EMAIL
@@ -251,7 +246,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         confirmation = user_message.lower()
         if confirmation in ['yes', 'y', 'correct', 'confirm']:
             report_data = context.user_data.get(TEMP_REPORT_KEY)
-            transcript = ""
             try:
                 await update.message.reply_text("Finalising your request, please wait...")
                 transcript = await context.application.to_thread(
@@ -272,8 +266,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
                 await update.message.reply_text("Thank you. Your query has been logged and a copy has been sent to your email.\n\nIs there anything else I can help with?")
             except Exception as e:
-                error_message = f"CRITICAL ERROR during report dispatch: {e}"
-                logger.critical(error_message, exc_info=True)
+                logger.critical(f"CRITICAL ERROR during report dispatch: {e}", exc_info=True)
                 await update.message.reply_text(
                     "A critical error occurred while finalising your report. The technical team has been notified. Please contact the clinic directly.")
                 context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
@@ -301,38 +294,40 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     """Log the error."""
     logger.error("Exception while handling an update:", exc_info=context.error)
 
-# --- FIX: Refactored main() to be an async function for cleaner startup/shutdown ---
-async def main() -> None:
+# --- FIX: This is an async function that the Application will run at startup ---
+async def post_init(application: Application):
+    """Clear any existing webhooks at startup."""
+    logger.info("Clearing any existing webhooks...")
+    await application.bot.delete_webhook(drop_pending_updates=True)
+
+# --- FIX: Reverted main() to a synchronous function to avoid event loop conflicts ---
+def main() -> None:
     """Initializes and runs the Telegram bot."""
     logger.info("--- Indra Clinic Bot Initializing ---")
     
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-
-    # Add handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_error_handler(error_handler)
-
-    # --- FIX: This is the modern, clean way to run async code at startup ---
-    # It runs after the app is initialized but before polling begins.
-    async def post_init(application: Application):
-        logger.info("Clearing any existing webhooks...")
-        await application.bot.delete_webhook(drop_pending_updates=True)
-
-    app.post_init = post_init
-
-    logger.info("Bot is configured. Starting polling...")
-    # The `run_polling` function will automatically handle signals (like SIGTERM from Render)
-    # for a graceful shutdown. No manual signal handling is needed.
-    await app.run_polling(poll_interval=1, drop_pending_updates=True)
-
-if __name__ == "__main__":
-    # --- FIX: Proper way to run the main async function and catch critical errors ---
     try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot shutdown requested. Exiting.")
+        # --- FIX: We chain the post_init function to the builder ---
+        app = (
+            Application.builder()
+            .token(TELEGRAM_TOKEN)
+            .post_init(post_init)
+            .build()
+        )
+
+        # Add handlers
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        app.add_error_handler(error_handler)
+
+        logger.info("Bot is configured. Starting polling...")
+        # --- FIX: run_polling is a blocking call that manages its own event loop ---
+        app.run_polling(poll_interval=1, drop_pending_updates=True)
+
     except Exception as e:
-        # This catches errors during the initial setup before the bot starts polling
-        logger.critical(f"FATAL ERROR during bot startup: {e}", exc_info=True)
+        # --- FIX: This top-level except block will now catch any setup errors ---
+        logger.critical(f"FATAL ERROR during bot setup: {e}", exc_info=True)
         sys.exit(1)
+
+# --- FIX: The script entry point is now a simple, direct call to main() ---
+if __name__ == "__main__":
+    main()
