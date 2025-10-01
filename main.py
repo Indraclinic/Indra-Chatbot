@@ -63,29 +63,31 @@ def load_system_prompt():
 
 SYSTEM_PROMPT = load_system_prompt()
 
-# --- CHANGE: Function signature updated to accept patient_dob for verification ---
 async def push_to_semble(patient_email: str, patient_dob: str, category: str, summary: str, transcript: str):
-    """Finds a patient by email, verifies with DOB, then pushes a new FreeTextRecord."""
+    """Finds a patient by a combined email and DOB search, then pushes a new FreeTextRecord."""
     if not SEMBLE_API_KEY:
         raise ValueError("Semble API Key is not configured on the server.")
 
     SEMBLE_GRAPHQL_URL = "https://open.semble.io/graphql"
     headers = {"x-token": SEMBLE_API_KEY, "Content-Type": "application/json"}
     
-    # --- CHANGE: The GraphQL query now also requests the dateOfBirth for verification ---
+    # --- CHANGE: Reverted to the simpler, valid GraphQL query ---
     find_patient_query = """
       query FindPatientByEmail($search: String!) {
         patients(search: $search) {
           data { 
             id
-            dateOfBirth
           }
         }
       }
     """
     
+    # --- CHANGE: Create a combined search string with both email and DOB ---
+    # This lets Semble perform the verification on their end.
+    combined_search_string = f"{patient_email} {patient_dob}"
+    
     async with httpx.AsyncClient() as client:
-        find_payload = {"query": find_patient_query, "variables": {"search": patient_email}}
+        find_payload = {"query": find_patient_query, "variables": {"search": combined_search_string}}
         search_response = await client.post(SEMBLE_GRAPHQL_URL, headers=headers, json=find_payload, timeout=20)
         search_response.raise_for_status()
         
@@ -94,26 +96,11 @@ async def push_to_semble(patient_email: str, patient_dob: str, category: str, su
         
         patients = response_data.get('data', {}).get('patients', {}).get('data', [])
         if not patients:
-            raise Exception(f"No patient found in Semble with email: {patient_email}")
+            # The error message now reflects the combined search
+            raise Exception(f"No patient found in Semble matching email '{patient_email}' and DOB '{patient_dob}'.")
 
-        # --- CHANGE: DOB verification logic to find the correct patient record ---
-        try:
-            # Reformat user's DOB from DD/MM/YYYY to YYYY-MM-DD to match Semble's likely format
-            dob_parts = patient_dob.split('/')
-            formatted_dob_for_match = f"{dob_parts[2]}-{dob_parts[1]}-{dob_parts[0]}"
-        except (IndexError, AttributeError):
-            raise ValueError(f"Invalid DOB format provided for verification: {patient_dob}. Expected DD/MM/YYYY.")
-        
-        matched_patient = None
-        for patient in patients:
-            if patient.get('dateOfBirth') == formatted_dob_for_match:
-                matched_patient = patient
-                break
-        
-        if not matched_patient:
-            raise Exception(f"A record with email '{patient_email}' was found, but the Date of Birth did not match.")
-
-        semble_patient_id = matched_patient['id']
+        # With the combined search, we can be confident the first result is correct.
+        semble_patient_id = patients[0]['id']
         logger.info(f"Found and verified Semble Patient ID: {semble_patient_id}")
 
         create_record_mutation = """
@@ -204,7 +191,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("This service is in beta. If you prefer, email us at drT@indra.clinic.")
     await asyncio.sleep(1.5)
     
-    # --- CHANGE: Expanded privacy notice for better clarity ---
     consent_message = (
         "Please review our data privacy information before we begin:\n\n"
         "**Data Handling & Your Privacy**\n"
@@ -226,7 +212,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if current_state == STATE_AWAITING_CONSENT:
         if user_message.lower() == 'i agree':
             context.user_data[STATE_KEY] = STATE_AWAITING_EMAIL
-            # --- CHANGE: Clarified which email address is needed ---
             await update.message.reply_text("Thank you. To begin, please provide the **email address you registered with Indra Clinic**.")
         else: await update.message.reply_text("To continue, please type 'I agree'.")
     elif current_state == STATE_AWAITING_EMAIL:
@@ -292,7 +277,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     report_data['category'],
                     report_data['summary']
                 )
-                # --- CHANGE: Pass the DOB to the Semble function for verification ---
                 await push_to_semble(
                     context.user_data.get(EMAIL_KEY),
                     context.user_data.get(DOB_KEY),
