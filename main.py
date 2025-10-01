@@ -69,7 +69,8 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
         raise ValueError("Semble API Key is not configured on the server.")
 
     SEMBLE_GRAPHQL_URL = "https://open.semble.io/graphql"
-    headers = {"Authorization": f"Bearer {SEMBLE_API_KEY}", "Content-Type": "application/json"}
+    # --- FIX: Reverted to using 'x-token' as per your previous working code ---
+    headers = {"x-token": SEMBLE_API_KEY, "Content-Type": "application/json"}
     
     find_patient_query = """
       query FindPatientByEmail($search: String!) {
