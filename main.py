@@ -5,12 +5,21 @@ import uuid
 import asyncio
 import textwrap
 import httpx
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-from telegram.error import InvalidToken, Conflict
 import json
 import smtplib
+import logging # --- FIX: Using the logging module is better than print() for deployment.
 from email.message import EmailMessage
+from telegram import Update
+from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.error import InvalidToken, Conflict
+
+# --- FIX: Set up basic logging to see timestamps and error levels ---
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
 
 # --- ENVIRONMENT VARIABLE CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -54,8 +63,7 @@ def load_system_prompt():
         with open("system_prompt.txt", "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        print("--- FATAL ERROR: system_prompt.txt not found! ---")
-        # Provide a basic fallback if the file is missing
+        logger.critical("--- FATAL ERROR: system_prompt.txt not found! ---")
         return "You are a helpful clinic assistant."
 
 SYSTEM_PROMPT = load_system_prompt()
@@ -67,7 +75,9 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
         raise ValueError("Semble API Key is not configured on the server.")
 
     SEMBLE_GRAPHQL_URL = "https://open.semble.io/graphql"
-    headers = {"x-token": SEMBLE_API_KEY, "Content-Type": "application/json"}
+    # --- FIX: Changed authentication header to match test_semble.py (Authorization: Bearer) ---
+    # This is a much more common standard than 'x-token'.
+    headers = {"Authorization": f"Bearer {SEMBLE_API_KEY}", "Content-Type": "application/json"}
     
     find_patient_query = """
       query FindPatientByEmail($search: String!) {
@@ -89,7 +99,7 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
         if not patients: raise Exception(f"No patient found in Semble with email: {patient_email}")
         
         semble_patient_id = patients[0]['id']
-        print(f"Found Semble Patient ID: {semble_patient_id}")
+        logger.info(f"Found Semble Patient ID: {semble_patient_id}")
 
         # Step 2: Create the FreeTextRecord
         create_record_mutation = """
@@ -111,7 +121,7 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
         if record_data.get("errors") or (record_data.get("data", {}).get("createFreeTextRecord") or {}).get("error"):
              raise Exception(f"GraphQL error during record creation: {record_data}")
 
-        print(f"Successfully pushed FreeTextRecord to Semble for Patient ID: {semble_patient_id}")
+        logger.info(f"Successfully pushed FreeTextRecord to Semble for Patient ID: {semble_patient_id}")
 
 
 def generate_report_and_send_email(dob: str, patient_email: str, session_id: str, history: list, category: str, summary: str):
@@ -139,7 +149,7 @@ def generate_report_and_send_email(dob: str, patient_email: str, session_id: str
         admin_msg.set_content(f"Query from {patient_email}...\n\n--- AI-Generated Summary ---\n{summary}")
         admin_msg.add_attachment(transcript_content.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_{session_id[-6:]}.txt')
         server.send_message(admin_msg)
-        print(f"Admin report successfully emailed to {REPORT_EMAIL}")
+        logger.info(f"Admin report successfully emailed to {REPORT_EMAIL}")
         
         # Email to Patient
         patient_subject = "Indra Clinic: A copy of your recent query"
@@ -150,7 +160,7 @@ def generate_report_and_send_email(dob: str, patient_email: str, session_id: str
         patient_msg.set_content(f"Dear Patient,\n\nFor your records, here is a summary of your recent query.\n\n**Summary:**\n{summary}\n\nKind regards,\nThe Indra Clinic Team")
         patient_msg.add_attachment(transcript_content.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_summary.txt')
         server.send_message(patient_msg)
-        print(f"Patient copy successfully emailed to {patient_email}")
+        logger.info(f"Patient copy successfully emailed to {patient_email}")
     
     return transcript_content
 
@@ -171,7 +181,7 @@ async def query_openrouter(history: list) -> tuple[str, str, str, str]:
             parsed = json.loads(content)
             return (parsed.get('response', "I'm having trouble."), parsed.get('category', 'Admin'), parsed.get('summary', 'No summary.'), parsed.get('action', 'CONTINUE').upper())
         except Exception as e:
-            print(f"An error occurred in query_openrouter: {e}")
+            logger.error(f"An error occurred in query_openrouter: {e}")
             return "A technical issue occurred.", "Admin", "Unhandled error", "CONTINUE"
 
 
@@ -188,6 +198,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_state = context.user_data.get(STATE_KEY)
+    # --- FIX: Ensure user_message is not None, which can happen with non-text messages ---
+    if not update.message or not update.message.text:
+        return
     user_message = update.message.text.strip()
     
     if current_state == STATE_AWAITING_CONSENT:
@@ -249,6 +262,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report_data = context.user_data.get(TEMP_REPORT_KEY)
             transcript = ""
             try:
+                await update.message.reply_text("Finalising your request, please wait...")
                 transcript = await context.application.to_thread(
                     generate_report_and_send_email,
                     context.user_data.get(DOB_KEY),
@@ -270,8 +284,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Thank you. Your query has been logged and a copy has been sent to your email.\n\nIs there anything else I can help with?")
 
             except Exception as e:
-                error_message = f"--- CRITICAL ERROR during report dispatch: {e} ---"
-                print(error_message)
+                error_message = f"CRITICAL ERROR during report dispatch: {e}"
+                logger.critical(error_message)
                 await update.message.reply_text(
                     "A critical error occurred while finalising your report. "
                     "The technical team has been notified via the logs.\n\n"
@@ -292,32 +306,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     elif current_state == STATE_AWAITING_NEW_QUERY:
         cleaned_message = user_message.lower()
-        if any(word in cleaned_message for word in ['no', 'nope', 'bye', 'end']):
+        if any(word in cleaned_message for word in ['no', 'nope', 'bye', 'end', 'thanks']):
             await update.message.reply_text("Thank you for using our service. Be well.")
             context.user_data.clear()
         else:
             context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
-            await handle_message(update, context)
-            
+            # --- FIX: Re-route to handle_message to properly process the new query ---
+            # This avoids duplicating the category selection logic.
+            await update.message.reply_text(f"Understood. Please select a category:\n1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**")
+
     else:
         await start(update, context)
+
+# --- FIX: Add a global error handler to log issues as noted in your traceback. ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log the error and send a telegram message to notify the developer."""
+    logger.error("Exception while handling an update:", exc_info=context.error)
 
 
 def main():
     """Initializes and runs the Telegram bot."""
-    print("--- Indra Clinic Bot Initializing ---")
+    logger.info("--- Indra Clinic Bot Initializing ---")
     
     try:
-        app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+        # --- FIX: Changed from ApplicationBuilder to Application for more control ---
+        app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+        # Add handlers
         app.add_handler(CommandHandler("start", start))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
-        print("Bot is configured. Starting polling...")
-        app.run_polling(poll_interval=1)
-    except Exception as e:
-        print(f"FATAL ERROR during bot setup or polling: {e}")
-        sys.exit(1)
+        # Add the error handler
+        app.add_error_handler(error_handler)
+        
+        # --- FIX: Add graceful shutdown handlers for deployment environments ---
+        # This allows the bot to stop cleanly when Render sends a stop signal.
+        app.add_stop_handlers(signal.SIGTERM, signal.SIGINT)
 
-if __name__ == "__main__":
-    main()
+        # --- FIX: Before polling, clear any lingering webhooks to prevent conflicts ---
+        logger.info("Clearing any existing webhooks...")
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(app.bot.delete_webhook(drop_pending_updates=True))
 
+        logger.info("Bot is configured. Starting polling...")
+        # --- FIX: Drop pending updates on startup to avoid processing old messages ---
+        app.run_polling(poll_interval=1, drop_pending_updates=True)
+
+    except Exception as
