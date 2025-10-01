@@ -63,7 +63,6 @@ def load_system_prompt():
 
 SYSTEM_PROMPT = load_system_prompt()
 
-# --- CHANGE: Reverted to email-only search for stability. DOB verification is removed. ---
 async def push_to_semble(patient_email: str, category: str, summary: str, transcript: str):
     """Finds a patient by email, then pushes a new FreeTextRecord."""
     if not SEMBLE_API_KEY:
@@ -94,7 +93,6 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
         if not patients:
             raise Exception(f"No patient found in Semble with email: {patient_email}")
 
-        # Takes the first patient record found for the given email.
         semble_patient_id = patients[0]['id']
         logger.info(f"Found Semble Patient ID: {semble_patient_id} using email search.")
 
@@ -150,7 +148,6 @@ def generate_report_and_send_email(dob: str, patient_email: str, session_id: str
         patient_msg['Subject'] = patient_subject
         patient_msg['From'] = SENDER_EMAIL
         patient_msg['To'] = patient_email
-        # --- CHANGE: Added note about 72-hour response time to patient email ---
         patient_msg.set_content(
             f"Dear Patient,\n\nFor your records, here is a summary of your recent query. "
             f"A member of our team will review this and get back to you within 72 hours (but hopefully much sooner!).\n\n"
@@ -186,7 +183,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data[SESSION_ID_KEY] = str(uuid.uuid4())
     context.user_data[STATE_KEY] = STATE_AWAITING_CONSENT
-    await update.message.reply_text("👋 Welcome to Indra Clinic! I’m Indie, your digital assistant.\n\n**Purpose of this Chat:** This is an administrative tool, not for medical advice.")
+    
+    # --- CHANGE: Updated the welcome message to be more specific about the bot's purpose ---
+    await update.message.reply_text(
+        "👋 Welcome to Indra Clinic! I’m Indie, your digital assistant.\n\n"
+        "**Purpose of this Chat:** While I cannot provide medical advice, I can securely gather information "
+        "about your administrative or clinical query for our team to review."
+    )
+    
     await asyncio.sleep(1.5)
     await update.message.reply_text("This service is in beta. If you prefer, email us at drT@indra.clinic.")
     await asyncio.sleep(1.5)
@@ -277,7 +281,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     report_data['category'],
                     report_data['summary']
                 )
-                # --- CHANGE: Simplified the call to push_to_semble, removing the DOB ---
                 await push_to_semble(
                     context.user_data.get(EMAIL_KEY),
                     report_data['category'],
@@ -285,7 +288,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     transcript
                 )
                 context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
-                # --- CHANGE: Added note about 72-hour response time to the final chat message ---
                 await update.message.reply_text(
                     "Thank you. Your query has been logged and a copy has been sent to your email. "
                     "A member of our team will get back to you within 72 hours (but hopefully much sooner!).\n\n"
