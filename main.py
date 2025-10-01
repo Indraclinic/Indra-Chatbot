@@ -64,17 +64,18 @@ def load_system_prompt():
 SYSTEM_PROMPT = load_system_prompt()
 
 async def push_to_semble(patient_email: str, patient_dob: str, category: str, summary: str, transcript: str):
-    """Finds a patient by a combined email and DOB search, then pushes a new FreeTextRecord."""
+    """Finds a patient using separate email and DOB parameters, then pushes a new FreeTextRecord."""
     if not SEMBLE_API_KEY:
         raise ValueError("Semble API Key is not configured on the server.")
 
     SEMBLE_GRAPHQL_URL = "https://open.semble.io/graphql"
     headers = {"x-token": SEMBLE_API_KEY, "Content-Type": "application/json"}
     
-    # --- CHANGE: Reverted to the simpler, valid GraphQL query ---
+    # --- CHANGE: A precise, structured GraphQL query using separate typed variables ---
+    # This is based on the new API documentation information.
     find_patient_query = """
-      query FindPatientByEmail($search: String!) {
-        patients(search: $search) {
+      query FindPatient($email: String!, $dob: Date!) {
+        patients(email: $email, dob: $dob) {
           data { 
             id
           }
@@ -82,12 +83,22 @@ async def push_to_semble(patient_email: str, patient_dob: str, category: str, su
       }
     """
     
-    # --- CHANGE: Create a combined search string with both email and DOB ---
-    # This lets Semble perform the verification on their end.
-    combined_search_string = f"{patient_email} {patient_dob}"
-    
+    # --- CHANGE: Reformat the DOB to the required YYYY-MM-DD format for the 'Date' scalar type ---
+    try:
+        dob_parts = patient_dob.split('/')
+        formatted_dob_for_api = f"{dob_parts[2]}-{dob_parts[1]}-{dob_parts[0]}"
+    except (IndexError, AttributeError):
+        logger.error(f"Invalid DOB format '{patient_dob}' received. Cannot query Semble.")
+        raise ValueError(f"Invalid DOB format provided: {patient_dob}. Expected DD/MM/YYYY.")
+
     async with httpx.AsyncClient() as client:
-        find_payload = {"query": find_patient_query, "variables": {"search": combined_search_string}}
+        # --- CHANGE: The variables now match the new structured query ---
+        variables = {
+            "email": patient_email,
+            "dob": formatted_dob_for_api
+        }
+        find_payload = {"query": find_patient_query, "variables": variables}
+        
         search_response = await client.post(SEMBLE_GRAPHQL_URL, headers=headers, json=find_payload, timeout=20)
         search_response.raise_for_status()
         
@@ -96,10 +107,8 @@ async def push_to_semble(patient_email: str, patient_dob: str, category: str, su
         
         patients = response_data.get('data', {}).get('patients', {}).get('data', [])
         if not patients:
-            # The error message now reflects the combined search
-            raise Exception(f"No patient found in Semble matching email '{patient_email}' and DOB '{patient_dob}'.")
+            raise Exception(f"No patient found in Semble with email '{patient_email}' and DOB '{patient_dob}'.")
 
-        # With the combined search, we can be confident the first result is correct.
         semble_patient_id = patients[0]['id']
         logger.info(f"Found and verified Semble Patient ID: {semble_patient_id}")
 
