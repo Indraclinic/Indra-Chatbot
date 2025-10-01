@@ -63,19 +63,18 @@ def load_system_prompt():
 
 SYSTEM_PROMPT = load_system_prompt()
 
-async def push_to_semble(patient_email: str, patient_dob: str, category: str, summary: str, transcript: str):
-    """Finds a patient using separate email and DOB parameters, then pushes a new FreeTextRecord."""
+# --- CHANGE: Reverted to email-only search for stability. DOB verification is removed. ---
+async def push_to_semble(patient_email: str, category: str, summary: str, transcript: str):
+    """Finds a patient by email, then pushes a new FreeTextRecord."""
     if not SEMBLE_API_KEY:
         raise ValueError("Semble API Key is not configured on the server.")
 
     SEMBLE_GRAPHQL_URL = "https://open.semble.io/graphql"
     headers = {"x-token": SEMBLE_API_KEY, "Content-Type": "application/json"}
     
-    # --- CHANGE: A precise, structured GraphQL query using separate typed variables ---
-    # This is based on the new API documentation information.
     find_patient_query = """
-      query FindPatient($email: String!, $dob: Date!) {
-        patients(email: $email, dob: $dob) {
+      query FindPatientByEmail($search: String!) {
+        patients(search: $search) {
           data { 
             id
           }
@@ -83,22 +82,8 @@ async def push_to_semble(patient_email: str, patient_dob: str, category: str, su
       }
     """
     
-    # --- CHANGE: Reformat the DOB to the required YYYY-MM-DD format for the 'Date' scalar type ---
-    try:
-        dob_parts = patient_dob.split('/')
-        formatted_dob_for_api = f"{dob_parts[2]}-{dob_parts[1]}-{dob_parts[0]}"
-    except (IndexError, AttributeError):
-        logger.error(f"Invalid DOB format '{patient_dob}' received. Cannot query Semble.")
-        raise ValueError(f"Invalid DOB format provided: {patient_dob}. Expected DD/MM/YYYY.")
-
     async with httpx.AsyncClient() as client:
-        # --- CHANGE: The variables now match the new structured query ---
-        variables = {
-            "email": patient_email,
-            "dob": formatted_dob_for_api
-        }
-        find_payload = {"query": find_patient_query, "variables": variables}
-        
+        find_payload = {"query": find_patient_query, "variables": {"search": patient_email}}
         search_response = await client.post(SEMBLE_GRAPHQL_URL, headers=headers, json=find_payload, timeout=20)
         search_response.raise_for_status()
         
@@ -107,10 +92,11 @@ async def push_to_semble(patient_email: str, patient_dob: str, category: str, su
         
         patients = response_data.get('data', {}).get('patients', {}).get('data', [])
         if not patients:
-            raise Exception(f"No patient found in Semble with email '{patient_email}' and DOB '{patient_dob}'.")
+            raise Exception(f"No patient found in Semble with email: {patient_email}")
 
+        # Takes the first patient record found for the given email.
         semble_patient_id = patients[0]['id']
-        logger.info(f"Found and verified Semble Patient ID: {semble_patient_id}")
+        logger.info(f"Found Semble Patient ID: {semble_patient_id} using email search.")
 
         create_record_mutation = """
             mutation CreateRecord($recordData: CreateFreeTextRecordDataInput!) {
@@ -164,7 +150,12 @@ def generate_report_and_send_email(dob: str, patient_email: str, session_id: str
         patient_msg['Subject'] = patient_subject
         patient_msg['From'] = SENDER_EMAIL
         patient_msg['To'] = patient_email
-        patient_msg.set_content(f"Dear Patient,\n\nFor your records, here is a summary of your recent query.\n\n**Summary:**\n{summary}\n\nKind regards,\nThe Indra Clinic Team")
+        # --- CHANGE: Added note about 72-hour response time to patient email ---
+        patient_msg.set_content(
+            f"Dear Patient,\n\nFor your records, here is a summary of your recent query. "
+            f"A member of our team will review this and get back to you within 72 hours (but hopefully much sooner!).\n\n"
+            f"**Summary:**\n{summary}\n\nKind regards,\nThe Indra Clinic Team"
+        )
         patient_msg.add_attachment(transcript_content.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_summary.txt')
         server.send_message(patient_msg)
         logger.info(f"Patient copy successfully emailed to {patient_email}")
@@ -286,15 +277,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     report_data['category'],
                     report_data['summary']
                 )
+                # --- CHANGE: Simplified the call to push_to_semble, removing the DOB ---
                 await push_to_semble(
                     context.user_data.get(EMAIL_KEY),
-                    context.user_data.get(DOB_KEY),
                     report_data['category'],
                     report_data['summary'],
                     transcript
                 )
                 context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
-                await update.message.reply_text("Thank you. Your query has been logged and a copy has been sent to your email.\n\nIs there anything else I can help with?")
+                # --- CHANGE: Added note about 72-hour response time to the final chat message ---
+                await update.message.reply_text(
+                    "Thank you. Your query has been logged and a copy has been sent to your email. "
+                    "A member of our team will get back to you within 72 hours (but hopefully much sooner!).\n\n"
+                    "Is there anything else I can help with?"
+                )
             except Exception as e:
                 logger.critical(f"CRITICAL ERROR during report dispatch: {e}", exc_info=True)
                 await update.message.reply_text(
