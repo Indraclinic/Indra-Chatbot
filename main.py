@@ -49,13 +49,12 @@ WORKFLOWS = ["Admin", "Prescription/Medication", "Clinical/Medical"]
 
 
 def load_system_prompt():
-    """Loads the system prompt from an external file."""
+    """Loads the system prompt from an external file to prevent syntax errors."""
     try:
         with open("system_prompt.txt", "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        print("--- FATAL ERROR: system_prompt.txt not found! ---")
-        # Return a basic fallback prompt
+        print("--- FATAL ERROR: system_prompt.txt not found! Using a basic fallback. ---")
         return "You are a helpful clinic assistant."
 
 SYSTEM_PROMPT = load_system_prompt()
@@ -176,6 +175,7 @@ async def query_openrouter(history: list) -> tuple[str, str, str, str]:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Initiates a new conversation."""
     context.user_data.clear()
     context.user_data[SESSION_ID_KEY] = str(uuid.uuid4())
     context.user_data[STATE_KEY] = STATE_AWAITING_CONSENT
@@ -187,6 +187,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(consent_message)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """The main state machine for handling all user messages."""
     current_state = context.user_data.get(STATE_KEY)
     user_message = update.message.text.strip()
     
@@ -208,9 +209,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[DOB_KEY] = user_message
             context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
             context.user_data[HISTORY_KEY] = []
-            await update.message.reply_text(
-                f"Thank you. Details noted.\n\nPlease select a category:\n1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**"
-            )
+            await update.message.reply_text(f"Thank you. Details noted.\n\nPlease select a category:\n1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**")
         else: await update.message.reply_text("Hmmm, that date doesn't look right. Please use DD/MM/YYYY format.")
 
     elif current_state == STATE_AWAITING_CATEGORY:
@@ -258,7 +257,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report_data = context.user_data.get(TEMP_REPORT_KEY)
             transcript = ""
             try:
-                # Run the blocking email function in a non-blocking way
                 transcript = await context.application.to_thread(
                     generate_report_and_send_email,
                     context.user_data.get(DOB_KEY),
@@ -333,4 +331,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+
