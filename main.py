@@ -188,7 +188,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_state = context.user_data.get(STATE_KEY)
     user_message = update.message.text.strip()
     
-    # ... (The entire state machine logic from your original file goes here and is unchanged)
     if current_state == STATE_AWAITING_CONSENT:
         if user_message.lower() == 'i agree':
             context.user_data[STATE_KEY] = STATE_AWAITING_EMAIL
@@ -248,7 +247,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report_data = context.user_data.get(TEMP_REPORT_KEY)
             try:
                 await update.message.reply_text("Finalising your request, please wait...")
-                transcript = await context.application.to_thread(
+                transcript = await asyncio.to_thread(
                     generate_report_and_send_email,
                     context.user_data.get(DOB_KEY),
                     context.user_data.get(EMAIL_KEY),
@@ -294,19 +293,16 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     """Log the error."""
     logger.error("Exception while handling an update:", exc_info=context.error)
 
-# --- FIX: This is an async function that the Application will run at startup ---
 async def post_init(application: Application):
     """Clear any existing webhooks at startup."""
     logger.info("Clearing any existing webhooks...")
     await application.bot.delete_webhook(drop_pending_updates=True)
 
-# --- FIX: Reverted main() to a synchronous function to avoid event loop conflicts ---
 def main() -> None:
     """Initializes and runs the Telegram bot."""
     logger.info("--- Indra Clinic Bot Initializing ---")
     
     try:
-        # --- FIX: We chain the post_init function to the builder ---
         app = (
             Application.builder()
             .token(TELEGRAM_TOKEN)
@@ -320,14 +316,11 @@ def main() -> None:
         app.add_error_handler(error_handler)
 
         logger.info("Bot is configured. Starting polling...")
-        # --- FIX: run_polling is a blocking call that manages its own event loop ---
         app.run_polling(poll_interval=1, drop_pending_updates=True)
 
     except Exception as e:
-        # --- FIX: This top-level except block will now catch any setup errors ---
         logger.critical(f"FATAL ERROR during bot setup: {e}", exc_info=True)
         sys.exit(1)
 
-# --- FIX: The script entry point is now a simple, direct call to main() ---
 if __name__ == "__main__":
     main()
