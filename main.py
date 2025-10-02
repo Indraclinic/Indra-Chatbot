@@ -7,6 +7,7 @@ import json
 import smtplib
 import logging
 from email.message import EmailMessage
+from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
@@ -18,7 +19,7 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# --- ENVIRONMENT VARIABLE CONFIGURATION ---
+# --- REVERT: Changed environment variables back to OpenRouter ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 SEMBLE_API_KEY = os.getenv("SEMBLE_API_KEY")
@@ -30,7 +31,7 @@ SMTP_USERNAME = os.getenv("SMTP_USERNAME")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 
 if not TELEGRAM_TOKEN or not OPENROUTER_API_KEY:
-    raise ValueError("FATAL: Critical environment variables are not set.")
+    raise ValueError("FATAL: OpenRouter or Telegram environment variables are not set.")
 
 # --- STATE AND DATA KEYS ---
 STATE_KEY = 'conversation_state'
@@ -40,6 +41,7 @@ DOB_KEY = 'date_of_birth'
 EMAIL_KEY = 'patient_email'
 SESSION_ID_KEY = 'session_id'
 CURRENT_APPT_KEY = 'current_appointment'
+TRANSCRIPT_KEY = 'full_transcript'
 
 # --- CONVERSATION STATES ---
 STATE_AWAITING_CONSENT = 'awaiting_consent'
@@ -48,6 +50,7 @@ STATE_AWAITING_DOB = 'awaiting_dob'
 STATE_AWAITING_CATEGORY = 'awaiting_category'
 STATE_CHAT_ACTIVE = 'chat_active'
 STATE_AWAITING_CONFIRMATION = 'awaiting_confirmation'
+STATE_AWAITING_TRANSCRIPT_CHOICE = 'awaiting_transcript_choice'
 STATE_AWAITING_NEW_QUERY = 'awaiting_new_query'
 STATE_ADMIN_SUB_CATEGORY = 'admin_sub_category'
 STATE_ADMIN_AWAITING_CURRENT_APPT = 'admin_awaiting_current_appt'
@@ -65,70 +68,45 @@ def load_system_prompt():
 
 SYSTEM_PROMPT = load_system_prompt()
 
+# --- REVERT: Removed the key_rotation_reminder function ---
+
 async def push_to_semble(patient_email: str, category: str, summary: str, transcript: str):
     """Finds a patient by email, then pushes a new FreeTextRecord."""
     if not SEMBLE_API_KEY:
         raise ValueError("Semble API Key is not configured on the server.")
-
     SEMBLE_GRAPHQL_URL = "https://open.semble.io/graphql"
     headers = {"x-token": SEMBLE_API_KEY, "Content-Type": "application/json"}
-    
-    find_patient_query = """
-      query FindPatientByEmail($search: String!) {
-        patients(search: $search) {
-          data { 
-            id
-          }
-        }
-      }
-    """
-    
+    find_patient_query = "query FindPatientByEmail($search: String!) { patients(search: $search) { data { id } } }"
     async with httpx.AsyncClient() as client:
         find_payload = {"query": find_patient_query, "variables": {"search": patient_email}}
         search_response = await client.post(SEMBLE_GRAPHQL_URL, headers=headers, json=find_payload, timeout=20)
         search_response.raise_for_status()
-        
         response_data = search_response.json()
         if response_data.get("errors"): raise Exception(f"GraphQL error during patient search: {response_data['errors']}")
-        
         patients = response_data.get('data', {}).get('patients', {}).get('data', [])
         if not patients:
             raise Exception(f"No patient found in Semble with email: {patient_email}")
-
         semble_patient_id = patients[0]['id']
         logger.info(f"Found Semble Patient ID: {semble_patient_id} using email search.")
-
-        create_record_mutation = """
-            mutation CreateRecord($recordData: CreateFreeTextRecordDataInput!) {
-                createFreeTextRecord(recordData: $recordData) {
-                    data { id }
-                    error
-                }
-            }
-        """
+        create_record_mutation = "mutation CreateRecord($recordData: CreateFreeTextRecordDataInput!) { createFreeTextRecord(recordData: $recordData) { data { id } error } }"
         note_question = f"Indie Bot Query: {category}"
         note_answer = f"**AI Summary:**<br>{summary}<br><br>{transcript}"
-        
         mutation_variables = {"recordData": {"patientId": semble_patient_id, "question": note_question, "answer": note_answer}}
-        
         record_payload = {"query": create_record_mutation, "variables": mutation_variables}
         record_response = await client.post(SEMBLE_GRAPHQL_URL, headers=headers, json=record_payload, timeout=20)
         record_response.raise_for_status()
         record_data = record_response.json()
         if record_data.get("errors") or (record_data.get("data", {}).get("createFreeTextRecord") or {}).get("error"):
              raise Exception(f"GraphQL error during record creation: {record_data}")
-
         logger.info(f"Successfully pushed FreeTextRecord to Semble for Patient ID: {semble_patient_id}")
 
-def generate_report_and_send_email(dob: str, patient_email: str, session_id: str, history: list, category: str, summary: str):
-    """Generates and sends reports. This is a synchronous (blocking) function."""
+def send_initial_emails_and_generate_transcripts(dob: str, patient_email: str, session_id: str, history: list, category: str, summary: str):
+    """Sends the admin report, a simple patient confirmation, and generates transcript formats."""
     transcript_for_email = f"Full Conversation Transcript (Session: {session_id})\n\n"
     transcript_for_semble = f"Full Conversation Transcript (Session: {session_id})<br><br>"
-
     if not history:
         system_line = f"[SYSTEM]: User followed a guided workflow.\n[SUMMARY]: {summary}\n"
         transcript_for_email += system_line
-        
         system_line_html = f"[SYSTEM]: User followed a guided workflow.<br>[SUMMARY]: {summary}<br>"
         transcript_for_semble += system_line_html
     else:
@@ -154,25 +132,43 @@ def generate_report_and_send_email(dob: str, patient_email: str, session_id: str
         server.send_message(admin_msg)
         logger.info(f"Admin report successfully emailed to {REPORT_EMAIL}")
         
+        patient_subject = "Indra Clinic: We have received your query"
+        patient_msg = EmailMessage()
+        patient_msg['Subject'] = patient_subject
+        patient_msg['From'] = SENDER_EMAIL
+        patient_msg['To'] = patient_email
+        patient_msg.set_content(
+            f"Dear Patient,\n\nThank you for your message. This email confirms that we have received your query.\n\n"
+            f"A member of our team will review this and get back to you within 72 hours (but hopefully much sooner!).\n\n"
+            f"Kind regards,\nThe Indra Clinic Team"
+        )
+        server.send_message(patient_msg)
+        logger.info(f"Patient confirmation successfully emailed to {patient_email}")
+    
+    return transcript_for_semble, transcript_for_email
+
+def send_transcript_email(patient_email: str, summary: str, transcript: str):
+    """Sends the full conversation transcript to the patient."""
+    if not all([SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SENDER_EMAIL]):
+        raise ValueError("SMTP configuration is incomplete on the server.")
+    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SMTP_USERNAME, SMTP_PASSWORD)
         patient_subject = "Indra Clinic: A copy of your recent query"
         patient_msg = EmailMessage()
         patient_msg['Subject'] = patient_subject
         patient_msg['From'] = SENDER_EMAIL
         patient_msg['To'] = patient_email
-
-        # --- CHANGE: Added a confidentiality notice to the top of the patient email. ---
         patient_msg.set_content(
             f"CONFIDENTIALITY NOTICE: This email contains sensitive personal health information. Please ensure it is stored securely.\n\n"
-            f"Dear Patient,\n\nFor your records, here is a summary of your recent query. "
-            f"A member of our team will review this and get back to you within 72 hours (but hopefully much sooner!).\n\n"
+            f"Dear Patient,\n\nAs requested, here is the summary and full transcript of your recent query for your records.\n\n"
             f"**Summary:**\n{summary}\n\nKind regards,\nThe Indra Clinic Team"
         )
-        patient_msg.add_attachment(transcript_for_email.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_summary.txt')
+        patient_msg.add_attachment(transcript.encode('utf-8'), maintype='text', subtype='plain', filename='transcript_summary.txt')
         server.send_message(patient_msg)
-        logger.info(f"Patient copy successfully emailed to {patient_email}")
-    
-    return transcript_for_semble
+        logger.info(f"Patient transcript successfully emailed to {patient_email}")
 
+# --- REVERT: Changed function back to query_openrouter ---
 async def query_openrouter(history: list) -> tuple[str, str, str, str]:
     """Queries OpenRouter asynchronously using httpx."""
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -208,7 +204,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("This service is in beta. If you prefer, email us at drT@indra.clinic.")
     await asyncio.sleep(1.5)
     
-    # --- CHANGE: Added security notice and refined consent wording. ---
+    # --- REVERT: Changed "Azure" back to "OpenRouter" in the consent message ---
     consent_message = (
         "Please review our data privacy information before we begin:\n\n"
         "**For your security, please ensure you are using a private device and network connection.**\n\n"
@@ -217,7 +213,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• **Verification:** We will ask for your email and Date of Birth. This is to securely identify you and ensure the information is correctly added to your medical record.\n"
         "• **AI Assistance:** We use a secure, third-party AI (`openai/gpt-4o-mini` via OpenRouter) to understand your request. All data is encrypted, and the AI is isolated—it cannot access your medical records.\n"
         "• **Medical Record:** A summary of this conversation will be permanently added to your patient file on our Electronic Medical Record system (Semble).\n"
-        "• **Confirmation:** For your own records, a full transcript of this conversation will be securely emailed to you upon completion.\n\n"
+        "• **Confirmation:** Upon completion, you will receive a confirmation email and will be offered a copy of the transcript for your records.\n\n"
         "By typing **'I agree'**, you acknowledge you have read this information and are ready to proceed. If you have any questions before starting, please feel free to ask."
     )
     await update.message.reply_text(consent_message)
@@ -234,12 +230,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Thank you. To begin, please provide the **email address you registered with Indra Clinic**.")
         else:
             await update.message.chat.send_action("typing")
-            pre_consent_history = [{
-                "role": "user", 
-                "text": f"Context: The user has not yet consented and is asking a question about the chatbot's privacy, security, or how it works. Please answer their question based ONLY on the official information in your instructions. The user's question is: '{user_message}'"
-            }]
+            pre_consent_history = [{"role": "user", "text": f"Context: The user has not yet consented and is asking a question... Please answer their question based ONLY on the official information in your instructions. The user's question is: '{user_message}'"}]
+            # --- REVERT: Calling query_openrouter again ---
             ai_response_text, _, _, _ = await query_openrouter(pre_consent_history)
-            
             await update.message.reply_text(ai_response_text)
             await asyncio.sleep(1.5)
             await update.message.reply_text("I hope that clarifies things. To continue, please type **'I agree'**.")
@@ -300,6 +293,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif current_state == STATE_CHAT_ACTIVE:
         context.user_data[HISTORY_KEY].append({"role": "user", "text": user_message})
         await update.message.chat.send_action("typing")
+        # --- REVERT: Calling query_openrouter again ---
         ai_response_text, category, summary, action = await query_openrouter(context.user_data.get(HISTORY_KEY, []))
         context.user_data[HISTORY_KEY].append({"role": "indie", "text": ai_response_text})
         await update.message.reply_text(ai_response_text)
@@ -313,8 +307,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report_data = context.user_data.get(TEMP_REPORT_KEY)
             try:
                 await update.message.reply_text("Finalising your request, please wait...")
-                transcript_for_semble = await asyncio.to_thread(
-                    generate_report_and_send_email,
+                
+                transcript_for_semble, transcript_for_email = await asyncio.to_thread(
+                    send_initial_emails_and_generate_transcripts,
                     context.user_data.get(DOB_KEY),
                     context.user_data.get(EMAIL_KEY),
                     context.user_data.get(SESSION_ID_KEY),
@@ -322,23 +317,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     report_data['category'],
                     report_data['summary']
                 )
+                
+                context.user_data[TRANSCRIPT_KEY] = transcript_for_email
+                
                 await push_to_semble(
                     context.user_data.get(EMAIL_KEY),
                     report_data['category'],
                     report_data['summary'],
                     transcript_for_semble
                 )
-                context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
+                
+                context.user_data[STATE_KEY] = STATE_AWAITING_TRANSCRIPT_CHOICE
                 await update.message.reply_text(
-                    "Thank you. Your query has been logged and a copy has been sent to your email. "
-                    "A member of our team will get back to you within 72 hours (but hopefully much sooner!).\n\n"
-                    "Is there anything else I can help with?"
+                    "Thank you, your query has been logged and sent to the clinic. A confirmation has been sent to your email.\n\n"
+                    "Would you like a copy of the full conversation transcript emailed to you? "
+                    "Please be aware that email is not end-to-end encrypted, and you are responsible for securing the transcript once received. (Yes/No)"
                 )
             except Exception as e:
                 logger.critical(f"CRITICAL ERROR during report dispatch: {e}", exc_info=True)
-                await update.message.reply_text(
-                    "A critical error occurred while finalising your report. The technical team has been notified. Please contact the clinic directly.")
+                await update.message.reply_text("A critical error occurred while finalising your report. The technical team has been notified.")
                 context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
+        
         elif confirmation in ['no', 'n', 'incorrect']:
             if not context.user_data.get(HISTORY_KEY):
                  context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
@@ -348,6 +347,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Understood. Please provide corrections.")
         else:
             await update.message.reply_text("I didn't understand. Please confirm with 'Yes' or 'No'.")
+            
+    elif current_state == STATE_AWAITING_TRANSCRIPT_CHOICE:
+        choice = user_message.lower()
+        if choice in ['yes', 'y']:
+            try:
+                await update.message.reply_text("Sending transcript now...")
+                await asyncio.to_thread(
+                    send_transcript_email,
+                    context.user_data.get(EMAIL_KEY),
+                    context.user_data.get(TEMP_REPORT_KEY, {}).get('summary'),
+                    context.user_data.get(TRANSCRIPT_KEY)
+                )
+                await update.message.reply_text("The transcript has been sent to your email.")
+            except Exception as e:
+                logger.error(f"Failed to send transcript email: {e}")
+                await update.message.reply_text("Sorry, there was an error sending the transcript. Please contact the clinic directly.")
+        
+        context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
+        await update.message.reply_text("Is there anything else I can help with?")
+
     elif current_state == STATE_AWAITING_NEW_QUERY:
         cleaned_message = user_message.lower()
         if any(word in cleaned_message for word in ['no', 'nope', 'bye', 'end', 'thanks']):
@@ -370,24 +389,17 @@ async def post_init(application: Application):
 
 def main() -> None:
     """Initializes and runs the Telegram bot."""
+    # --- REVERT: Removed the key rotation reminder call ---
+    
     logger.info("--- Indra Clinic Bot Initializing ---")
     
     try:
-        app = (
-            Application.builder()
-            .token(TELEGRAM_TOKEN)
-            .post_init(post_init)
-            .build()
-        )
-
-        # Add handlers
+        app = (Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build())
         app.add_handler(CommandHandler("start", start))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         app.add_error_handler(error_handler)
-
         logger.info("Bot is configured. Starting polling...")
         app.run_polling(poll_interval=1, drop_pending_updates=True)
-
     except Exception as e:
         logger.critical(f"FATAL ERROR during bot setup: {e}", exc_info=True)
         sys.exit(1)
