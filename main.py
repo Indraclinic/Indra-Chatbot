@@ -49,7 +49,6 @@ STATE_AWAITING_CATEGORY = 'awaiting_category'
 STATE_CHAT_ACTIVE = 'chat_active'
 STATE_AWAITING_CONFIRMATION = 'awaiting_confirmation'
 STATE_AWAITING_NEW_QUERY = 'awaiting_new_query'
-# --- CHANGE: Re-added states for the hard-coded admin workflow ---
 STATE_ADMIN_SUB_CATEGORY = 'admin_sub_category'
 STATE_ADMIN_AWAITING_CURRENT_APPT = 'admin_awaiting_current_appt'
 STATE_ADMIN_AWAITING_NEW_APPT = 'admin_awaiting_new_appt'
@@ -197,15 +196,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("This service is in beta. If you prefer, email us at drT@indra.clinic.")
     await asyncio.sleep(1.5)
     
+    # --- CHANGE: Updated the AI Assistance bullet point to be more specific and transparent ---
     consent_message = (
         "Please review our data privacy information before we begin:\n\n"
         "**Data Handling & Your Privacy**\n"
         "• **Purpose:** The information you provide is used solely for administrative and clinical support to manage your query.\n"
         "• **Verification:** We will ask for your email and Date of Birth. This is to securely identify you and ensure the information is correctly added to your medical record.\n"
-        "• **AI Assistance:** This chat uses a secure, third-party AI to help understand your request and summarize the conversation. Your data is not used for training the AI model.\n"
+        "• **AI Assistance:** We use a secure, third-party AI (`openai/gpt-4o-mini` via OpenRouter) to understand your request. All data is encrypted, and the AI is isolated—it cannot access your medical records.\n"
         "• **Medical Record:** A summary of this conversation will be permanently added to your patient file on our Electronic Medical Record system (Semble).\n"
         "• **Confirmation:** For your own records, a full transcript of this conversation will be securely emailed to you upon completion.\n\n"
-        "To confirm you have read and understood this, please type **'I agree'** to proceed."
+        "To confirm you have read and understood this, or if you have any questions, please reply. To proceed, type **'I agree'**."
     )
     await update.message.reply_text(consent_message)
 
@@ -215,11 +215,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_state = context.user_data.get(STATE_KEY)
     user_message = update.message.text.strip()
     
+    # --- CHANGE: Added logic to handle questions during the consent stage ---
     if current_state == STATE_AWAITING_CONSENT:
         if user_message.lower() == 'i agree':
             context.user_data[STATE_KEY] = STATE_AWAITING_EMAIL
             await update.message.reply_text("Thank you. To begin, please provide the **email address you registered with Indra Clinic**.")
-        else: await update.message.reply_text("To continue, please type 'I agree'.")
+        else:
+            # Assume any other message is a question about the process.
+            await update.message.chat.send_action("typing")
+            # Create a specific context for the AI to answer the pre-consent question
+            pre_consent_history = [{
+                "role": "user", 
+                "text": f"Context: The user has not yet consented and is asking a question about the chatbot's privacy, security, or how it works. Please answer their question based ONLY on the official information in your instructions. The user's question is: '{user_message}'"
+            }]
+            ai_response_text, _, _, _ = await query_openrouter(pre_consent_history)
+            
+            await update.message.reply_text(ai_response_text)
+            await asyncio.sleep(1.5)
+            await update.message.reply_text("I hope that clarifies things. To continue, please type **'I agree'**.")
+
     elif current_state == STATE_AWAITING_EMAIL:
         if '@' in user_message and '.' in user_message:
             context.user_data[EMAIL_KEY] = user_message
@@ -235,7 +249,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else: await update.message.reply_text("That date doesn't look right. Please use the DD/MM/YYYY format.")
     elif current_state == STATE_AWAITING_CATEGORY:
         cleaned_message = user_message.lower()
-        # --- CHANGE: 'Admin' option now goes to a new sub-category menu ---
         if any(word in cleaned_message for word in ['1', 'admin']):
             context.user_data[STATE_KEY] = STATE_ADMIN_SUB_CATEGORY
             await update.message.reply_text("Understood. Is your administrative query about **Appointments** or **Something else**?")
@@ -249,7 +262,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Thank you. Please describe the clinical issue.")
         else: await update.message.reply_text("I don't understand. Please reply with a number (1-3).")
     
-    # --- CHANGE: Added new state to handle the Admin sub-category choice ---
     elif current_state == STATE_ADMIN_SUB_CATEGORY:
         cleaned_message = user_message.lower()
         if 'appointment' in cleaned_message:
@@ -262,7 +274,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("I didn't understand. Please reply with 'Appointments' or 'Something else'.")
 
-    # --- CHANGE: Re-added the hard-coded workflow for changing appointments ---
     elif current_state == STATE_ADMIN_AWAITING_CURRENT_APPT:
         context.user_data[CURRENT_APPT_KEY] = user_message
         context.user_data[STATE_KEY] = STATE_ADMIN_AWAITING_NEW_APPT
@@ -273,7 +284,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         summary = f"Patient requests to change their appointment from '{current_appt}' to '{new_appt}'."
         context.user_data[TEMP_REPORT_KEY] = {'category': 'Admin', 'summary': summary}
         context.user_data[STATE_KEY] = STATE_AWAITING_CONFIRMATION
-        # Ensure chat history is empty so it uses the guided workflow format for the transcript
         context.user_data[HISTORY_KEY] = []
         await update.message.reply_text(f"---\n**Query Summary**\n---\nPlease review:\n\n**Summary:** *{summary}*\n\nIs this correct? (Yes/No)")
 
@@ -320,11 +330,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "A critical error occurred while finalising your report. The technical team has been notified. Please contact the clinic directly.")
                 context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
         elif confirmation in ['no', 'n', 'incorrect']:
-            # If the user says 'no' after a hard-coded workflow, they need to start again with a category.
             if not context.user_data.get(HISTORY_KEY):
                  context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
                  await update.message.reply_text("Understood. Let's restart. Please select a category:\n1. Administrative\n2. Prescription/Medication\n3. Clinical/Medical")
-            else: # If it was an AI chat, they can provide corrections.
+            else: 
                 context.user_data[STATE_KEY] = STATE_CHAT_ACTIVE
                 await update.message.reply_text("Understood. Please provide corrections.")
         else:
