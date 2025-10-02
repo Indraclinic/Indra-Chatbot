@@ -107,8 +107,6 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
             }
         """
         note_question = f"Indie Bot Query: {category}"
-        
-        # --- CHANGE: Using <br> tags instead of \n for Semble's rich text editor. ---
         note_answer = f"**AI Summary:**<br>{summary}<br><br>{transcript}"
         
         mutation_variables = {"recordData": {"patientId": semble_patient_id, "question": note_question, "answer": note_answer}}
@@ -124,26 +122,19 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
 
 def generate_report_and_send_email(dob: str, patient_email: str, session_id: str, history: list, category: str, summary: str):
     """Generates and sends reports. This is a synchronous (blocking) function."""
-    # This function now generates two versions of the transcript:
-    # 1. Plain text with newlines (\n) for the email attachment.
-    # 2. HTML with <br> tags for the Semble note.
-    
     transcript_for_email = f"Full Conversation Transcript (Session: {session_id})\n\n"
     transcript_for_semble = f"Full Conversation Transcript (Session: {session_id})<br><br>"
 
     if not history:
-        # Guided workflow transcript
         system_line = f"[SYSTEM]: User followed a guided workflow.\n[SUMMARY]: {summary}\n"
         transcript_for_email += system_line
         
         system_line_html = f"[SYSTEM]: User followed a guided workflow.<br>[SUMMARY]: {summary}<br>"
         transcript_for_semble += system_line_html
     else:
-        # AI chat transcript
         for message in history:
             line = f"[{message['role'].upper()}]: {message['text']}"
             transcript_for_email += f"{line}\n\n"
-            # --- CHANGE: Using <br><br> to force line breaks in Semble's interface. ---
             transcript_for_semble += f"{line}<br><br>"
     
     if not all([SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SENDER_EMAIL]):
@@ -159,7 +150,6 @@ def generate_report_and_send_email(dob: str, patient_email: str, session_id: str
         admin_msg['From'] = SENDER_EMAIL
         admin_msg['To'] = REPORT_EMAIL
         admin_msg.set_content(f"Query from {patient_email}...\n\n--- AI-Generated Summary ---\n{summary}")
-        # Email attachment uses the plain text version
         admin_msg.add_attachment(transcript_for_email.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_{session_id[-6:]}.txt')
         server.send_message(admin_msg)
         logger.info(f"Admin report successfully emailed to {REPORT_EMAIL}")
@@ -169,7 +159,10 @@ def generate_report_and_send_email(dob: str, patient_email: str, session_id: str
         patient_msg['Subject'] = patient_subject
         patient_msg['From'] = SENDER_EMAIL
         patient_msg['To'] = patient_email
+
+        # --- CHANGE: Added a confidentiality notice to the top of the patient email. ---
         patient_msg.set_content(
+            f"CONFIDENTIALITY NOTICE: This email contains sensitive personal health information. Please ensure it is stored securely.\n\n"
             f"Dear Patient,\n\nFor your records, here is a summary of your recent query. "
             f"A member of our team will review this and get back to you within 72 hours (but hopefully much sooner!).\n\n"
             f"**Summary:**\n{summary}\n\nKind regards,\nThe Indra Clinic Team"
@@ -178,7 +171,6 @@ def generate_report_and_send_email(dob: str, patient_email: str, session_id: str
         server.send_message(patient_msg)
         logger.info(f"Patient copy successfully emailed to {patient_email}")
     
-    # Return the Semble-formatted version of the transcript
     return transcript_for_semble
 
 async def query_openrouter(history: list) -> tuple[str, str, str, str]:
@@ -216,15 +208,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("This service is in beta. If you prefer, email us at drT@indra.clinic.")
     await asyncio.sleep(1.5)
     
+    # --- CHANGE: Added security notice and refined consent wording. ---
     consent_message = (
         "Please review our data privacy information before we begin:\n\n"
+        "**For your security, please ensure you are using a private device and network connection.**\n\n"
         "**Data Handling & Your Privacy**\n"
         "• **Purpose:** The information you provide is used solely for administrative and clinical support to manage your query.\n"
         "• **Verification:** We will ask for your email and Date of Birth. This is to securely identify you and ensure the information is correctly added to your medical record.\n"
         "• **AI Assistance:** We use a secure, third-party AI (`openai/gpt-4o-mini` via OpenRouter) to understand your request. All data is encrypted, and the AI is isolated—it cannot access your medical records.\n"
         "• **Medical Record:** A summary of this conversation will be permanently added to your patient file on our Electronic Medical Record system (Semble).\n"
         "• **Confirmation:** For your own records, a full transcript of this conversation will be securely emailed to you upon completion.\n\n"
-        "To confirm you have read and understood this, or if you have any questions, please reply. To proceed, type **'I agree'**."
+        "By typing **'I agree'**, you acknowledge you have read this information and are ready to proceed. If you have any questions before starting, please feel free to ask."
     )
     await update.message.reply_text(consent_message)
 
@@ -319,7 +313,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report_data = context.user_data.get(TEMP_REPORT_KEY)
             try:
                 await update.message.reply_text("Finalising your request, please wait...")
-                # The generate_report function now returns the Semble-formatted transcript
                 transcript_for_semble = await asyncio.to_thread(
                     generate_report_and_send_email,
                     context.user_data.get(DOB_KEY),
@@ -333,7 +326,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     context.user_data.get(EMAIL_KEY),
                     report_data['category'],
                     report_data['summary'],
-                    transcript_for_semble # Pass the correctly formatted transcript
+                    transcript_for_semble
                 )
                 context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
                 await update.message.reply_text(
