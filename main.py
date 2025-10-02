@@ -107,7 +107,8 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
             }
         """
         note_question = f"Indie Bot Query: {category}"
-        note_answer = (f"**AI Summary:**\n{summary}\n\n--- Full Conversation Transcript ---\n{transcript}")
+        note_answer = f"**AI Summary:**\n{summary}\n\n{transcript}"
+        
         mutation_variables = {"recordData": {"patientId": semble_patient_id, "question": note_question, "answer": note_answer}}
         
         record_payload = {"query": create_record_mutation, "variables": mutation_variables}
@@ -126,6 +127,7 @@ def generate_report_and_send_email(dob: str, patient_email: str, session_id: str
         transcript_content += f"[SYSTEM]: User followed a guided workflow.\n[SUMMARY]: {summary}\n"
     else:
         for message in history:
+            # --- CHANGE: Reverted to a single newline (\n) for a more compact transcript. ---
             transcript_content += f"[{message['role'].upper()}]: {message['text']}\n"
     
     if not all([SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SENDER_EMAIL]):
@@ -196,7 +198,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("This service is in beta. If you prefer, email us at drT@indra.clinic.")
     await asyncio.sleep(1.5)
     
-    # --- CHANGE: Updated the AI Assistance bullet point to be more specific and transparent ---
     consent_message = (
         "Please review our data privacy information before we begin:\n\n"
         "**Data Handling & Your Privacy**\n"
@@ -215,15 +216,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_state = context.user_data.get(STATE_KEY)
     user_message = update.message.text.strip()
     
-    # --- CHANGE: Added logic to handle questions during the consent stage ---
     if current_state == STATE_AWAITING_CONSENT:
         if user_message.lower() == 'i agree':
             context.user_data[STATE_KEY] = STATE_AWAITING_EMAIL
             await update.message.reply_text("Thank you. To begin, please provide the **email address you registered with Indra Clinic**.")
         else:
-            # Assume any other message is a question about the process.
             await update.message.chat.send_action("typing")
-            # Create a specific context for the AI to answer the pre-consent question
             pre_consent_history = [{
                 "role": "user", 
                 "text": f"Context: The user has not yet consented and is asking a question about the chatbot's privacy, security, or how it works. Please answer their question based ONLY on the official information in your instructions. The user's question is: '{user_message}'"
