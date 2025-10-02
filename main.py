@@ -127,8 +127,8 @@ def generate_report_and_send_email(dob: str, patient_email: str, session_id: str
         transcript_content += f"[SYSTEM]: User followed a guided workflow.\n[SUMMARY]: {summary}\n"
     else:
         for message in history:
-            # --- CHANGE: Reverted to a single newline (\n) for a more compact transcript. ---
-            transcript_content += f"[{message['role'].upper()}]: {message['text']}\n"
+            # --- CHANGE: Re-instated double newline (\n\n) to force line breaks in Semble's interface. ---
+            transcript_content += f"[{message['role'].upper()}]: {message['text']}\n\n"
     
     if not all([SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SENDER_EMAIL]):
         raise ValueError("SMTP configuration is incomplete on the server.")
