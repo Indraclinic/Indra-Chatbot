@@ -44,13 +44,8 @@ CURRENT_APPT_KEY = 'current_appointment'
 TRANSCRIPT_KEY = 'full_transcript'
 
 # --- CONVERSATION STATES ---
-# Main Flow
 STATE_AWAITING_CHOICE = 'awaiting_choice'
-
-# Wellness Flow State
 STATE_WELLNESS_CHAT_ACTIVE = 'wellness_chat_active'
-
-# Clinic Flow States
 STATE_AWAITING_CONSENT = 'awaiting_consent'
 STATE_AWAITING_EMAIL = 'awaiting_email'
 STATE_AWAITING_DOB = 'awaiting_dob'
@@ -76,7 +71,6 @@ def load_system_prompt():
 SYSTEM_PROMPT = load_system_prompt()
 
 async def push_to_semble(patient_email: str, category: str, summary: str, transcript: str):
-    """Finds a patient by email, then pushes a new FreeTextRecord."""
     if not SEMBLE_API_KEY:
         raise ValueError("Semble API Key is not configured on the server.")
     SEMBLE_GRAPHQL_URL = "https://open.semble.io/graphql"
@@ -106,7 +100,6 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
         logger.info(f"Successfully pushed FreeTextRecord to Semble for Patient ID: {semble_patient_id}")
 
 def send_initial_emails_and_generate_transcripts(dob: str, patient_email: str, session_id: str, history: list, category: str, summary: str):
-    """Sends the admin report, a simple patient confirmation, and generates transcript formats."""
     transcript_for_email = f"Full Conversation Transcript (Session: {session_id})\n\n"
     transcript_for_semble = f"Full Conversation Transcript (Session: {session_id})<br><br>"
     if not history:
@@ -126,7 +119,6 @@ def send_initial_emails_and_generate_transcripts(dob: str, patient_email: str, s
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
         server.starttls()
         server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        
         admin_subject = f"[Indie Bot] {category} Query from: {patient_email} (DOB: {dob})"
         admin_msg = EmailMessage()
         admin_msg['Subject'] = admin_subject
@@ -136,7 +128,6 @@ def send_initial_emails_and_generate_transcripts(dob: str, patient_email: str, s
         admin_msg.add_attachment(transcript_for_email.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_{session_id[-6:]}.txt')
         server.send_message(admin_msg)
         logger.info(f"Admin report successfully emailed to {REPORT_EMAIL}")
-        
         patient_subject = "Indra Clinic: We have received your query"
         patient_msg = EmailMessage()
         patient_msg['Subject'] = patient_subject
@@ -153,7 +144,6 @@ def send_initial_emails_and_generate_transcripts(dob: str, patient_email: str, s
     return transcript_for_semble, transcript_for_email
 
 def send_transcript_email(patient_email: str, summary: str, transcript: str):
-    """Sends the full conversation transcript to the patient."""
     if not all([SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SENDER_EMAIL]):
         raise ValueError("SMTP configuration is incomplete on the server.")
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
@@ -174,7 +164,6 @@ def send_transcript_email(patient_email: str, summary: str, transcript: str):
         logger.info(f"Patient transcript successfully emailed to {patient_email}")
 
 async def query_openrouter(history: list) -> tuple[str, str, str, str]:
-    """Queries OpenRouter asynchronously using httpx."""
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for turn in history:
         role = 'assistant' if turn['role'] == 'indie' else 'user'
@@ -421,7 +410,6 @@ def main() -> None:
     logger.info("--- Indra Clinic Bot Initializing ---")
     
     try:
-        # --- CHANGE: Correct way to register the error handler is in the builder ---
         app = (
             Application.builder()
             .token(TELEGRAM_TOKEN)
@@ -431,7 +419,6 @@ def main() -> None:
 
         app.add_error_handler(error_handler)
         
-        # Add handlers
         app.add_handler(CommandHandler("start", start))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
