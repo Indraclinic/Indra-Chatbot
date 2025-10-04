@@ -19,7 +19,7 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# --- REVERT: Changed environment variables back to OpenRouter ---
+# --- ENVIRONMENT VARIABLE CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 SEMBLE_API_KEY = os.getenv("SEMBLE_API_KEY")
@@ -44,6 +44,13 @@ CURRENT_APPT_KEY = 'current_appointment'
 TRANSCRIPT_KEY = 'full_transcript'
 
 # --- CONVERSATION STATES ---
+# Main Flow
+STATE_AWAITING_CHOICE = 'awaiting_choice'
+
+# Wellness Flow State
+STATE_WELLNESS_CHAT_ACTIVE = 'wellness_chat_active'
+
+# Clinic Flow States
 STATE_AWAITING_CONSENT = 'awaiting_consent'
 STATE_AWAITING_EMAIL = 'awaiting_email'
 STATE_AWAITING_DOB = 'awaiting_dob'
@@ -67,8 +74,6 @@ def load_system_prompt():
         return "You are a helpful clinic assistant."
 
 SYSTEM_PROMPT = load_system_prompt()
-
-# --- REVERT: Removed the key_rotation_reminder function ---
 
 async def push_to_semble(patient_email: str, category: str, summary: str, transcript: str):
     """Finds a patient by email, then pushes a new FreeTextRecord."""
@@ -168,7 +173,6 @@ def send_transcript_email(patient_email: str, summary: str, transcript: str):
         server.send_message(patient_msg)
         logger.info(f"Patient transcript successfully emailed to {patient_email}")
 
-# --- REVERT: Changed function back to query_openrouter ---
 async def query_openrouter(history: list) -> tuple[str, str, str, str]:
     """Queries OpenRouter asynchronously using httpx."""
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -189,34 +193,18 @@ async def query_openrouter(history: list) -> tuple[str, str, str, str]:
             logger.error(f"An error occurred in query_openrouter: {e}", exc_info=True)
             return "A technical issue occurred.", "Admin", "Unhandled error", "CONTINUE"
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    context.user_data[SESSION_ID_KEY] = str(uuid.uuid4())
-    context.user_data[STATE_KEY] = STATE_AWAITING_CONSENT
-    
     await update.message.reply_text(
         "👋 Welcome to Indra Clinic! I’m Indie, your digital assistant.\n\n"
-        "**Purpose of this Chat:** While I cannot provide medical advice, I can securely gather information "
+        "**Purpose of this Chat:** While I cannot provide medical advice, we can either talk about wellness or I can securely gather information "
         "about your administrative or clinical query for our team to review."
     )
-    
     await asyncio.sleep(1.5)
-    await update.message.reply_text("This service is in beta. If you prefer, email us at drT@indra.clinic.")
-    await asyncio.sleep(1.5)
-    
-    # --- REVERT: Changed "Azure" back to "OpenRouter" in the consent message ---
-    consent_message = (
-        "Please review our data privacy information before we begin:\n\n"
-        "**For your security, please ensure you are using a private device and network connection.**\n\n"
-        "**Data Handling & Your Privacy**\n"
-        "• **Purpose:** The information you provide is used solely for administrative and clinical support to manage your query.\n"
-        "• **Verification:** We will ask for your email and Date of Birth. This is to securely identify you and ensure the information is correctly added to your medical record.\n"
-        "• **AI Assistance:** We use a secure, third-party AI (`openai/gpt-4o-mini` via OpenRouter) to understand your request. All data is encrypted, and the AI is isolated—it cannot access your medical records.\n"
-        "• **Medical Record:** A summary of this conversation will be permanently added to your patient file on our Electronic Medical Record system (Semble).\n"
-        "• **Confirmation:** Upon completion, you will receive a confirmation email and will be offered a copy of the transcript for your records.\n\n"
-        "By typing **'I agree'**, you acknowledge you have read this information and are ready to proceed. If you have any questions before starting, please feel free to ask."
-    )
-    await update.message.reply_text(consent_message)
+    await update.message.reply_text("Would you like to explore **Wellness** resources, or connect with the **Clinic**?")
+    context.user_data[STATE_KEY] = STATE_AWAITING_CHOICE
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -224,14 +212,59 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_state = context.user_data.get(STATE_KEY)
     user_message = update.message.text.strip()
     
-    if current_state == STATE_AWAITING_CONSENT:
+    # --- MAIN BRANCH: WELLNESS OR CLINIC ---
+    if current_state == STATE_AWAITING_CHOICE:
+        choice = user_message.lower()
+        if 'clinic' in choice:
+            context.user_data[SESSION_ID_KEY] = str(uuid.uuid4())
+            context.user_data[STATE_KEY] = STATE_AWAITING_CONSENT
+            await update.message.reply_text("This service is in beta. If you prefer, email us at drT@indra.clinic.")
+            await asyncio.sleep(1.5)
+            consent_message = (
+                "Please review our data privacy information before we begin:\n\n"
+                "**For your security, please ensure you are using a private device and network connection.**\n\n"
+                "**Data Handling & Your Privacy**\n"
+                "• **Purpose:** The information you provide is used solely for administrative and clinical support to manage your query.\n"
+                "• **Verification:** We will ask for your email and Date of Birth to securely identify you.\n"
+                "• **AI Assistance:** We use a secure, third-party AI (`openai/gpt-4o-mini` via OpenRouter) to understand your request. All data is encrypted, and the AI is isolated—it cannot access your medical records.\n"
+                "• **Medical Record:** A summary of this conversation will be added to your patient file on our EMR system (Semble).\n"
+                "• **Confirmation:** Upon completion, you will receive a confirmation email and will be offered a copy of the transcript for your records.\n\n"
+                "By typing **'I agree'**, you acknowledge you have read this information and are ready to proceed. If you have any questions before starting, please feel free to ask."
+            )
+            await update.message.reply_text(consent_message)
+        elif 'wellness' in choice:
+            context.user_data[STATE_KEY] = STATE_WELLNESS_CHAT_ACTIVE
+            context.user_data[HISTORY_KEY] = [
+                {"role": "user", "text": "Context: User is in the Wellness Flow. Start by offering the main wellness menu."}
+            ]
+            await update.message.chat.send_action("typing")
+            ai_response_text, _, _, _ = await query_openrouter(context.user_data.get(HISTORY_KEY, []))
+            context.user_data[HISTORY_KEY].append({"role": "indie", "text": ai_response_text})
+            await update.message.reply_text(ai_response_text)
+        else:
+            await update.message.reply_text("I'm sorry, I didn't understand. Please choose either **Wellness** or **Clinic**.")
+
+    # --- WELLNESS FLOW ---
+    elif current_state == STATE_WELLNESS_CHAT_ACTIVE:
+        context.user_data[HISTORY_KEY].append({"role": "user", "text": user_message})
+        await update.message.chat.send_action("typing")
+        ai_response_text, category, summary, action = await query_openrouter(context.user_data.get(HISTORY_KEY, []))
+        context.user_data[HISTORY_KEY].append({"role": "indie", "text": ai_response_text})
+        await update.message.reply_text(ai_response_text)
+        
+        if action == "REPORT":
+            logger.warning(f"Wellness Red Flag detected. Summary: {summary}")
+            await update.message.reply_text("If you need to speak with the clinic or explore wellness again, please restart by typing /start.")
+            context.user_data.clear()
+
+    # --- CLINIC FLOW ---
+    elif current_state == STATE_AWAITING_CONSENT:
         if user_message.lower() == 'i agree':
             context.user_data[STATE_KEY] = STATE_AWAITING_EMAIL
             await update.message.reply_text("Thank you. To begin, please provide the **email address you registered with Indra Clinic**.")
         else:
             await update.message.chat.send_action("typing")
             pre_consent_history = [{"role": "user", "text": f"Context: The user has not yet consented and is asking a question... Please answer their question based ONLY on the official information in your instructions. The user's question is: '{user_message}'"}]
-            # --- REVERT: Calling query_openrouter again ---
             ai_response_text, _, _, _ = await query_openrouter(pre_consent_history)
             await update.message.reply_text(ai_response_text)
             await asyncio.sleep(1.5)
@@ -293,7 +326,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif current_state == STATE_CHAT_ACTIVE:
         context.user_data[HISTORY_KEY].append({"role": "user", "text": user_message})
         await update.message.chat.send_action("typing")
-        # --- REVERT: Calling query_openrouter again ---
         ai_response_text, category, summary, action = await query_openrouter(context.user_data.get(HISTORY_KEY, []))
         context.user_data[HISTORY_KEY].append({"role": "indie", "text": ai_response_text})
         await update.message.reply_text(ai_response_text)
@@ -373,9 +405,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Thank you for using our service. Be well.")
             context.user_data.clear()
         else:
-            context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
-            await update.message.reply_text(f"Understood. Please select a new category:\n1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**")
+            context.user_data[STATE_KEY] = STATE_AWAITING_CHOICE
+            await update.message.reply_text("Understood. Would you like to explore **Wellness** resources, or connect with the **Clinic**?")
     else:
+        # Fallback to start if state is unknown
         await start(update, context)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -389,15 +422,13 @@ async def post_init(application: Application):
 
 def main() -> None:
     """Initializes and runs the Telegram bot."""
-    # --- REVERT: Removed the key rotation reminder call ---
-    
     logger.info("--- Indra Clinic Bot Initializing ---")
     
     try:
         app = (Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build())
         app.add_handler(CommandHandler("start", start))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        app.add_error_handler(error_handler)
+        app.add_handler(error_handler)
         logger.info("Bot is configured. Starting polling...")
         app.run_polling(poll_interval=1, drop_pending_updates=True)
     except Exception as e:
