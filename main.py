@@ -58,17 +58,18 @@ STATE_ADMIN_SUB_CATEGORY = 'admin_sub_category'
 STATE_ADMIN_AWAITING_CURRENT_APPT = 'admin_awaiting_current_appt'
 STATE_ADMIN_AWAITING_NEW_APPT = 'admin_awaiting_new_appt'
 
-
-def load_system_prompt():
-    """Loads the system prompt from an external file."""
+def load_prompt_from_file(filename: str, fallback: str) -> str:
+    """Loads a prompt from an external file with a fallback."""
     try:
-        with open("system_prompt.txt", "r", encoding="utf-8") as f:
+        with open(filename, "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        logger.critical("--- FATAL ERROR: system_prompt.txt not found! ---")
-        return "You are a helpful clinic assistant."
+        logger.critical(f"--- FATAL ERROR: {filename} not found! ---")
+        return fallback
 
-SYSTEM_PROMPT = load_system_prompt()
+SYSTEM_PROMPT = load_prompt_from_file("system_prompt.txt", "You are a helpful clinic assistant.")
+WELLNESS_SCRIPT = load_prompt_from_file("wellness_script.txt", "The wellness script is unavailable.")
+
 
 async def push_to_semble(patient_email: str, category: str, summary: str, transcript: str):
     if not SEMBLE_API_KEY:
@@ -221,16 +222,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await update.message.reply_text(consent_message)
         elif 'wellness' in choice:
-            # --- CHANGE: Added a disclaimer before starting the wellness flow. ---
             await update.message.reply_text(
                 "**A Quick Note Before We Begin:**\n"
                 "The following content is for general wellness and educational purposes only. It is not medical advice and is not a substitute for diagnosis or treatment from a qualified healthcare professional.\n\n"
                 "If you are in distress or have an urgent concern, please contact your GP or emergency services."
             )
             await asyncio.sleep(3)
-
             context.user_data[STATE_KEY] = STATE_WELLNESS_CHAT_ACTIVE
             context.user_data[HISTORY_KEY] = [
+                {"role": "system", "text": f"Here is the wellness knowledge base you must use:\n\n{WELLNESS_SCRIPT}"},
                 {"role": "user", "text": "Context: User is in the Wellness Flow. Start by offering the main wellness menu."}
             ]
             await update.message.chat.send_action("typing")
