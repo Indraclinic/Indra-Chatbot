@@ -35,12 +35,12 @@ if not TELEGRAM_TOKEN or not OPENROUTER_API_KEY:
 
 # --- WELLNESS CONTENT DICTIONARY ---
 WELLNESS_CONTENT = {
-    "welcome": "👋 Welcome!\nThis chat is adapted from the Healthy Happy Wise Programme, written by Dr Sheila Popert, our Medical Director and Palliative Care Consultant...",
+    "welcome": "👋 Welcome!\nThis chat is adapted from the Healthy Happy Wise Programme, written by Dr Sheila Popert, our Medical Director and Palliative Care Consultant. Sheila has spent over 30 years working in palliative medicine, supporting people at the hardest times of their lives. What she discovered is that the same practices that help people in crisis can also help us all live healthier, happier, wiser lives — whatever our circumstances.",
     "main_menu": "You can:\n👉 Explore the **7-day journey**\n👉 Or tell me what you’re **struggling** with today",
     "journey_menu": "Which day would you like to explore?\n\n1. Day 1 – Stress\n2. Day 2 – Sleep\n3. Day 3 – Movement\n4. Day 4 – Nutrition\n5. Day 5 – Attitude\n6. Day 6 – Happiness\n7. Day 7 – Habits",
     "day_1_intro": "Day 1 – Stress: The Master Key\n\nStress touches everything else: sleep, food, immunity, mood. The World Health Organization has called it “the epidemic of the 21st century.”",
-    "day_1_story": "Story: Rebecca – Think Pink\n\n“I remember Rebecca, only 32, dying of ovarian cancer... That day she showed me that the mind can be stronger than medicine.”",
-    "day_1_teaching": "Teaching\n\nStress activates your sympathetic nervous system... You can switch it on through your breath.",
+    "day_1_story": "Story: Rebecca – Think Pink\n\n“I remember Rebecca, only 32, dying of ovarian cancer. Her suffering wasn’t just physical. She was leaving behind her 8-year-old son. We call this total pain — body, mind, emotions, spirit. When medicines failed, a psychologist taught her to ‘think pink’ when pain came. The next day, she was in pink pyjamas, pink sheets, eating pink blancmange — smiling. That day she showed me that the mind can be stronger than medicine.”",
+    "day_1_teaching": "Teaching\n\nStress activates your sympathetic nervous system — fight, flight, or freeze. Pupils dilate, heart races, digestion slows. Useful for danger, harmful when constant. The antidote is your parasympathetic nervous system — rest and digest. You can switch it on through your breath.",
     "day_1_inquiry": "Inquiry\n\nBefore we practise, pause and notice: 👉 Where do you feel stress right now? Tight chest, Racing heart, Churning stomach, Restless thoughts, Hard to notice",
     "day_1_practice": "Practice: 3:1:5 Breathing\n\nInhale gently through your nose: 1-2-3\nHold: 1\nExhale through your mouth: 1-2-3-4-5\n\nRepeat this 3 times.",
     "day_1_feedback_prompt": "How did that feel?\n1. Calmer\n2. No change\n3. A bit hard",
@@ -48,6 +48,7 @@ WELLNESS_CONTENT = {
     "day_1_closing": "💡 Every breath is a reminder to your body: you are safe.",
     # The rest of the full wellness script content would be populated here
 }
+
 
 # --- STATE AND DATA KEYS ---
 STATE_KEY = 'conversation_state'
@@ -75,6 +76,7 @@ STATE_ADMIN_SUB_CATEGORY = 'admin_sub_category'
 STATE_ADMIN_AWAITING_CURRENT_APPT = 'admin_awaiting_current_appt'
 STATE_ADMIN_AWAITING_NEW_APPT = 'admin_awaiting_new_appt'
 
+
 def load_system_prompt():
     """Loads the system prompt from an external file."""
     try:
@@ -88,21 +90,117 @@ SYSTEM_PROMPT = load_system_prompt()
 
 async def push_to_semble(patient_email: str, category: str, summary: str, transcript: str):
     if not SEMBLE_API_KEY: raise ValueError("Semble API Key is not configured.")
-    # ... (Full function code as previously established)
-    logger.info(f"Successfully pushed FreeTextRecord to Semble for Patient ID.")
+    SEMBLE_GRAPHQL_URL = "https://open.semble.io/graphql"
+    headers = {"x-token": SEMBLE_API_KEY, "Content-Type": "application/json"}
+    find_patient_query = "query FindPatientByEmail($search: String!) { patients(search: $search) { data { id } } }"
+    async with httpx.AsyncClient() as client:
+        find_payload = {"query": find_patient_query, "variables": {"search": patient_email}}
+        search_response = await client.post(SEMBLE_GRAPHQL_URL, headers=headers, json=find_payload, timeout=20)
+        search_response.raise_for_status()
+        response_data = search_response.json()
+        if response_data.get("errors"): raise Exception(f"GraphQL error during patient search: {response_data['errors']}")
+        patients = response_data.get('data', {}).get('patients', {}).get('data', [])
+        if not patients:
+            raise Exception(f"No patient found in Semble with email: {patient_email}")
+        semble_patient_id = patients[0]['id']
+        logger.info(f"Found Semble Patient ID: {semble_patient_id} using email search.")
+        create_record_mutation = "mutation CreateRecord($recordData: CreateFreeTextRecordDataInput!) { createFreeTextRecord(recordData: $recordData) { data { id } error } }"
+        note_question = f"Indie Bot Query: {category}"
+        note_answer = f"**AI Summary:**<br>{summary}<br><br>{transcript}"
+        mutation_variables = {"recordData": {"patientId": semble_patient_id, "question": note_question, "answer": note_answer}}
+        record_payload = {"query": create_record_mutation, "variables": mutation_variables}
+        record_response = await client.post(SEMBLE_GRAPHQL_URL, headers=headers, json=record_payload, timeout=20)
+        record_response.raise_for_status()
+        record_data = record_response.json()
+        if record_data.get("errors") or (record_data.get("data", {}).get("createFreeTextRecord") or {}).get("error"):
+             raise Exception(f"GraphQL error during record creation: {record_data}")
+        logger.info(f"Successfully pushed FreeTextRecord to Semble for Patient ID: {semble_patient_id}")
 
 def send_initial_emails_and_generate_transcripts(dob: str, patient_email: str, session_id: str, history: list, category: str, summary: str):
-    # ... (Full function code as previously established)
-    return "semble_transcript_placeholder", "email_transcript_placeholder"
+    transcript_for_email = f"Full Conversation Transcript (Session: {session_id})\n\n"
+    transcript_for_semble = f"Full Conversation Transcript (Session: {session_id})<br><br>"
+    if not history:
+        system_line = f"[SYSTEM]: User followed a guided workflow.\n[SUMMARY]: {summary}\n"
+        transcript_for_email += system_line
+        system_line_html = f"[SYSTEM]: User followed a guided workflow.<br>[SUMMARY]: {summary}<br>"
+        transcript_for_semble += system_line_html
+    else:
+        for message in history:
+            line = f"[{message['role'].upper()}]: {message['text']}"
+            transcript_for_email += f"{line}\n\n"
+            transcript_for_semble += f"{line}<br><br>"
+    
+    if not all([SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SENDER_EMAIL]):
+        raise ValueError("SMTP configuration is incomplete on the server.")
+
+    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        admin_subject = f"[Indie Bot] {category} Query from: {patient_email} (DOB: {dob})"
+        admin_msg = EmailMessage()
+        admin_msg['Subject'] = admin_subject
+        admin_msg['From'] = SENDER_EMAIL
+        admin_msg['To'] = REPORT_EMAIL
+        admin_msg.set_content(f"Query from {patient_email}...\n\n--- AI-Generated Summary ---\n{summary}")
+        admin_msg.add_attachment(transcript_for_email.encode('utf-8'), maintype='text', subtype='plain', filename=f'transcript_{session_id[-6:]}.txt')
+        server.send_message(admin_msg)
+        logger.info(f"Admin report successfully emailed to {REPORT_EMAIL}")
+        patient_subject = "Indra Clinic: We have received your query"
+        patient_msg = EmailMessage()
+        patient_msg['Subject'] = patient_subject
+        patient_msg['From'] = SENDER_EMAIL
+        patient_msg['To'] = patient_email
+        patient_msg.set_content(
+            f"Dear Patient,\n\nThank you for your message. This email confirms that we have received your query.\n\n"
+            f"A member of our team will review this and get back to you within 72 hours (but hopefully much sooner!).\n\n"
+            f"Kind regards,\nThe Indra Clinic Team"
+        )
+        server.send_message(patient_msg)
+        logger.info(f"Patient confirmation successfully emailed to {patient_email}")
+    
+    return transcript_for_semble, transcript_for_email
 
 def send_transcript_email(patient_email: str, summary: str, transcript: str):
-    # ... (Full function code as previously established)
-    logger.info(f"Patient transcript successfully emailed to {patient_email}")
+    if not all([SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SENDER_EMAIL]):
+        raise ValueError("SMTP configuration is incomplete on the server.")
+    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        patient_subject = "Indra Clinic: A copy of your recent query"
+        patient_msg = EmailMessage()
+        patient_msg['Subject'] = patient_subject
+        patient_msg['From'] = SENDER_EMAIL
+        patient_msg['To'] = patient_email
+        patient_msg.set_content(
+            f"CONFIDENTIALITY NOTICE: This email contains sensitive personal health information. Please ensure it is stored securely.\n\n"
+            f"Dear Patient,\n\nAs requested, here is the summary and full transcript of your recent query for your records.\n\n"
+            f"**Summary:**\n{summary}\n\nKind regards,\nThe Indra Clinic Team"
+        )
+        patient_msg.add_attachment(transcript.encode('utf-8'), maintype='text', subtype='plain', filename='transcript_summary.txt')
+        server.send_message(patient_msg)
+        logger.info(f"Patient transcript successfully emailed to {patient_email}")
 
 async def query_openrouter(history: list) -> tuple[str, str, str, str]:
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    # ... (Full function code as previously established)
-    return "response", "category", "summary", "action"
+    for turn in history:
+        role = 'assistant' if turn['role'] == 'indie' else 'user'
+        messages.append({"role": role, "content": turn['text']})
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    data = {"model": "openai/gpt-4o-mini", "messages": messages, "response_format": {"type": "json_object"}}
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+            return (parsed.get('response', "I'm having trouble."), parsed.get('category', 'Admin'), parsed.get('summary', 'No summary.'), parsed.get('action', 'CONTINUE').upper())
+        except httpx.TimeoutException:
+            logger.error("API call to OpenRouter timed out.")
+            return "I'm sorry, the connection to my AI service timed out. Please try again in a moment.", "Admin", "API Timeout", "CONTINUE"
+        except Exception as e:
+            logger.error(f"An error occurred in query_openrouter: {e}", exc_info=True)
+            return "A technical issue occurred.", "Admin", "Unhandled error", "CONTINUE"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -142,11 +240,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif 'wellness' in choice:
             await update.message.reply_text(
                 "**A Quick Note Before We Begin:**\n"
-                "The following content is for general wellness and educational purposes only..."
+                "The following content is for general wellness and educational purposes only. It is not medical advice and is not a substitute for diagnosis or treatment from a qualified healthcare professional.\n\n"
+                "If you are in distress or have an urgent concern, please contact your GP or emergency services."
             )
             await asyncio.sleep(3)
-            await update.message.reply_text("This part of the chat is interactive. To move through each section, you can simply reply 'ok' or 'next'.")
-            await asyncio.sleep(2)
             
             context.user_data[STATE_KEY] = STATE_WELLNESS_CHAT_ACTIVE
             context.user_data[WELLNESS_STEP_KEY] = 'welcome'
@@ -170,18 +267,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prompt_injection = None
         user_input = user_message.lower()
 
-        # This logic determines which piece of content to feed the AI next
         if current_step == 'welcome' and ('journey' in user_input):
-            prompt_injection = f"The user chose the 7-day journey. Present this menu: '{WELLNESS_CONTENT['journey_menu']}'"
+            prompt_injection = f"The user chose the 7-day journey. Present this menu of options: '{WELLNESS_CONTENT['journey_menu']}'"
             context.user_data[WELLNESS_STEP_KEY] = 'journey_menu'
         elif current_step == 'journey_menu' and ('1' in user_input or 'stress' in user_input):
-            prompt_injection = f"The user chose Day 1. Present the intro: '{WELLNESS_CONTENT['day_1_intro']}'. Then ask them to reply 'ok' to hear the story."
+            prompt_injection = f"The user chose Day 1. Present the introduction: '{WELLNESS_CONTENT['day_1_intro']}'. Then ask them to reply 'ok' to hear the story."
             context.user_data[WELLNESS_STEP_KEY] = 'day_1_story'
         elif current_step == 'day_1_story':
             prompt_injection = f"Now, present the Day 1 story: '{WELLNESS_CONTENT['day_1_story']}'. Then ask them to reply 'ok' to learn the teaching."
             context.user_data[WELLNESS_STEP_KEY] = 'day_1_teaching'
         # ... A full implementation would have elif blocks for every step of every day and struggles option ...
-
+        
         if prompt_injection:
             history.append({"role": "system", "text": prompt_injection})
 
