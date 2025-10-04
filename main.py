@@ -58,6 +58,7 @@ STATE_ADMIN_SUB_CATEGORY = 'admin_sub_category'
 STATE_ADMIN_AWAITING_CURRENT_APPT = 'admin_awaiting_current_appt'
 STATE_ADMIN_AWAITING_NEW_APPT = 'admin_awaiting_new_appt'
 
+
 def load_prompt_from_file(filename: str, fallback: str) -> str:
     """Loads a prompt from an external file with a fallback."""
     try:
@@ -172,13 +173,16 @@ async def query_openrouter(history: list) -> tuple[str, str, str, str]:
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
     data = {"model": "openai/gpt-4o-mini", "messages": messages, "response_format": {"type": "json_object"}}
     
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         try:
-            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=20)
+            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
             parsed = json.loads(content)
             return (parsed.get('response', "I'm having trouble."), parsed.get('category', 'Admin'), parsed.get('summary', 'No summary.'), parsed.get('action', 'CONTINUE').upper())
+        except httpx.TimeoutException:
+            logger.error("API call to OpenRouter timed out.")
+            return "I'm sorry, the connection to my AI service timed out. Please try again in a moment.", "Admin", "API Timeout", "CONTINUE"
         except Exception as e:
             logger.error(f"An error occurred in query_openrouter: {e}", exc_info=True)
             return "A technical issue occurred.", "Admin", "Unhandled error", "CONTINUE"
@@ -202,6 +206,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_state = context.user_data.get(STATE_KEY)
     user_message = update.message.text.strip()
     
+    async def get_ai_response(history, thinking_text="Thinking, please wait a moment..."):
+        thinking_message = await update.message.reply_text(thinking_text)
+        await update.message.chat.send_action("typing")
+        response = await query_openrouter(history)
+        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=thinking_message.message_id)
+        return response
+
     if current_state == STATE_AWAITING_CHOICE:
         choice = user_message.lower()
         if 'clinic' in choice:
@@ -228,13 +239,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "If you are in distress or have an urgent concern, please contact your GP or emergency services."
             )
             await asyncio.sleep(3)
+            await update.message.reply_text(
+                "This part of the chat is interactive. To move through each section, you can simply reply 'ok' or 'next'."
+            )
+            await asyncio.sleep(2)
+            
             context.user_data[STATE_KEY] = STATE_WELLNESS_CHAT_ACTIVE
             context.user_data[HISTORY_KEY] = [
                 {"role": "system", "text": f"Here is the wellness knowledge base you must use:\n\n{WELLNESS_SCRIPT}"},
                 {"role": "user", "text": "Context: User is in the Wellness Flow. Start by offering the main wellness menu."}
             ]
-            await update.message.chat.send_action("typing")
-            ai_response_text, _, _, _ = await query_openrouter(context.user_data.get(HISTORY_KEY, []))
+            ai_response_text, _, _, _ = await get_ai_response(context.user_data.get(HISTORY_KEY, []), "Initializing wellness chat...")
             context.user_data[HISTORY_KEY].append({"role": "indie", "text": ai_response_text})
             await update.message.reply_text(ai_response_text)
         else:
@@ -242,8 +257,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif current_state == STATE_WELLNESS_CHAT_ACTIVE:
         context.user_data[HISTORY_KEY].append({"role": "user", "text": user_message})
-        await update.message.chat.send_action("typing")
-        ai_response_text, category, summary, action = await query_openrouter(context.user_data.get(HISTORY_KEY, []))
+        ai_response_text, category, summary, action = await get_ai_response(context.user_data.get(HISTORY_KEY, []))
         context.user_data[HISTORY_KEY].append({"role": "indie", "text": ai_response_text})
         await update.message.reply_text(ai_response_text)
         
@@ -257,9 +271,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[STATE_KEY] = STATE_AWAITING_EMAIL
             await update.message.reply_text("Thank you. To begin, please provide the **email address you registered with Indra Clinic**.")
         else:
-            await update.message.chat.send_action("typing")
             pre_consent_history = [{"role": "user", "text": f"Context: The user has not yet consented and is asking a question... Please answer their question based ONLY on the official information in your instructions. The user's question is: '{user_message}'"}]
-            ai_response_text, _, _, _ = await query_openrouter(pre_consent_history)
+            ai_response_text, _, _, _ = await get_ai_response(pre_consent_history, "Finding an answer for you...")
             await update.message.reply_text(ai_response_text)
             await asyncio.sleep(1.5)
             await update.message.reply_text("I hope that clarifies things. To continue, please type **'I agree'**.")
@@ -319,8 +332,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif current_state == STATE_CHAT_ACTIVE:
         context.user_data[HISTORY_KEY].append({"role": "user", "text": user_message})
-        await update.message.chat.send_action("typing")
-        ai_response_text, category, summary, action = await query_openrouter(context.user_data.get(HISTORY_KEY, []))
+        ai_response_text, category, summary, action = await get_ai_response(context.user_data.get(HISTORY_KEY, []))
         context.user_data[HISTORY_KEY].append({"role": "indie", "text": ai_response_text})
         await update.message.reply_text(ai_response_text)
         if action == "REPORT":
