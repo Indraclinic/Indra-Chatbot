@@ -221,6 +221,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await update.message.reply_text(consent_message)
         elif 'wellness' in choice:
+            # --- CHANGE: Added a disclaimer before starting the wellness flow. ---
+            await update.message.reply_text(
+                "**A Quick Note Before We Begin:**\n"
+                "The following content is for general wellness and educational purposes only. It is not medical advice and is not a substitute for diagnosis or treatment from a qualified healthcare professional.\n\n"
+                "If you are in distress or have an urgent concern, please contact your GP or emergency services."
+            )
+            await asyncio.sleep(3)
+
             context.user_data[STATE_KEY] = STATE_WELLNESS_CHAT_ACTIVE
             context.user_data[HISTORY_KEY] = [
                 {"role": "user", "text": "Context: User is in the Wellness Flow. Start by offering the main wellness menu."}
