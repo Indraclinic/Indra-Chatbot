@@ -76,6 +76,7 @@ STATE_WELLNESS_DAY_7_TEACHING = 'wellness_day_7_teaching'
 STATE_WELLNESS_DAY_7_PRACTICE = 'wellness_day_7_practice'
 STATE_WELLNESS_STRUGGLES_CHAT_ACTIVE = 'wellness_struggles_chat_active'
 
+
 def load_system_prompt():
     """Loads the system prompt from an external file."""
     try:
@@ -188,7 +189,6 @@ async def query_openrouter(history: list) -> tuple[str, str, str, str]:
             logger.error(f"An error occurred in query_openrouter: {e}", exc_info=True)
             return "A technical issue occurred.", "Admin", "Unhandled error", "CONTINUE"
 
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text(
@@ -268,37 +268,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if '1' in choice or 'stress' in choice:
             context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_1_STORY
             await update.message.reply_text("Day 1 – Stress: The Master Key\n\nStress touches everything else: sleep, food, immunity, mood. The World Health Organization has called it “the epidemic of the 21st century.”")
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2.5)
             await update.message.reply_text("When you're ready for a short story, reply 'ok'.")
         elif '2' in choice or 'sleep' in choice:
             context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_2_TEACHING
             await update.message.reply_text("Day 2 – Sleep: Rest and Renewal\n\nSleep is nature’s healer. Shakespeare called it: “The balm of hurt minds, great nature’s second course, chief nourisher in life’s feast.” Yet, 71% of people in the UK don’t get enough.")
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2.5)
             await update.message.reply_text("Reply 'ok' to continue.")
         elif '3' in choice or 'movement' in choice:
             context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_3_TEACHING
             await update.message.reply_text("Day 3 – Movement: Medicine in Motion\n\nHippocrates said: “Walking is man’s best medicine.” Half of adults don’t move enough. Yet movement boosts heart, mood, digestion, and memory.")
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2.5)
             await update.message.reply_text("Reply 'ok' to continue.")
         elif '4' in choice or 'nutrition' in choice:
             context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_4_STORY
             await update.message.reply_text("Day 4 – Nutrition: Food as Medicine\n\n“Let food be thy medicine,” said Hippocrates. Food nourishes body and soul, and the gut is your “second brain.”")
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2.5)
             await update.message.reply_text("Reply 'ok' for a story.")
         elif '5' in choice or 'attitude' in choice:
             context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_5_TEACHING
             await update.message.reply_text("Day 5 – Attitude: Shaping Your Mind\n\nKahlil Gibran wrote: “Your living is determined not so much by what life brings, as by the attitude you bring to life.”")
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2.5)
             await update.message.reply_text("Reply 'ok' to continue.")
         elif '6' in choice or 'happiness' in choice:
             context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_6_TEACHING
             await update.message.reply_text("Day 6 – Happiness: Savouring Life\n\nMarcus Aurelius said: “Very little is needed to make a happy life; it is all within yourself.”")
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2.5)
             await update.message.reply_text("Reply 'ok' to continue.")
         elif '7' in choice or 'habits' in choice:
             context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_7_TEACHING
             await update.message.reply_text("Day 7 – Habits: The Invisible Architecture\n\n40–45% of your day is habit. Habits are like tractor tracks in mud — repetition deepens the groove.")
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2.5)
             await update.message.reply_text("Reply 'ok' to continue.")
         else:
             await update.message.reply_text("Please select a day from 1 to 7.")
@@ -307,12 +307,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif current_state == STATE_WELLNESS_DAY_1_STORY:
         context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_1_TEACHING
         await update.message.reply_text("Story: Rebecca – Think Pink\n\n“I remember Rebecca, only 32, dying of ovarian cancer. Her suffering wasn’t just physical. She was leaving behind her 8-year-old son. We call this total pain — body, mind, emotions, spirit. When medicines failed, a psychologist taught her to ‘think pink’ when pain came. The next day, she was in pink pyjamas, pink sheets, eating pink blancmange — smiling. That day she showed me that the mind can be stronger than medicine.”")
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(2.5)
         await update.message.reply_text("Reply 'ok' to learn about the science of stress.")
     elif current_state == STATE_WELLNESS_DAY_1_TEACHING:
         context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_1_INQUIRY
         await update.message.reply_text("Teaching\n\nStress activates your sympathetic nervous system — fight, flight, or freeze. Pupils dilate, heart races, digestion slows. Useful for danger, harmful when constant. The antidote is your parasympathetic nervous system — rest and digest. You can switch it on through your breath.")
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(2.5)
         await update.message.reply_text("Reply 'next' for a quick check-in.")
     elif current_state == STATE_WELLNESS_DAY_1_INQUIRY:
         context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_1_PRACTICE
@@ -337,7 +337,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("💡 Closing:\n“Every breath is a reminder to your body: you are safe.”")
             await wellness_day_end_message(update, context)
     elif current_state == STATE_WELLNESS_DAY_1_ALT:
-        await update.message.reply_text("Alternative: Elephant & Hippo Breathing\n\n“Sarah, a patient with severe anxiety, couldn’t manage counting... Inhale saying: El-e-phant (3 syllables). Hold briefly. Exhale saying: Hip-po-pot-a-mus (5 syllables)“\n\nHer oxygen levels rose, her pulse slowed, and her anxiety eased. Words, not numbers, brought her calm.")
+        await update.message.reply_text("Alternative: Elephant & Hippo Breathing\n\n“Sarah, a patient with severe anxiety, couldn’t manage counting. So she used words... Inhale saying: El-e-phant (3 syllables). Hold briefly. Exhale saying: Hip-po-pot-a-mus (5 syllables)“\n\nHer oxygen levels rose, her pulse slowed, and her anxiety eased. Words, not numbers, brought her calm.")
         await asyncio.sleep(2)
         await update.message.reply_text("💡 Closing:\n“Every breath is a reminder to your body: you are safe.”")
         await wellness_day_end_message(update, context)
