@@ -9,7 +9,7 @@ import logging
 from email.message import EmailMessage
 from datetime import datetime
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, BaseHandler
 
 # --- Set up basic logging ---
 logging.basicConfig(
@@ -212,7 +212,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_state = context.user_data.get(STATE_KEY)
     user_message = update.message.text.strip()
     
-    # --- MAIN BRANCH: WELLNESS OR CLINIC ---
     if current_state == STATE_AWAITING_CHOICE:
         choice = user_message.lower()
         if 'clinic' in choice:
@@ -244,7 +243,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("I'm sorry, I didn't understand. Please choose either **Wellness** or **Clinic**.")
 
-    # --- WELLNESS FLOW ---
     elif current_state == STATE_WELLNESS_CHAT_ACTIVE:
         context.user_data[HISTORY_KEY].append({"role": "user", "text": user_message})
         await update.message.chat.send_action("typing")
@@ -257,7 +255,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("If you need to speak with the clinic or explore wellness again, please restart by typing /start.")
             context.user_data.clear()
 
-    # --- CLINIC FLOW ---
     elif current_state == STATE_AWAITING_CONSENT:
         if user_message.lower() == 'i agree':
             context.user_data[STATE_KEY] = STATE_AWAITING_EMAIL
@@ -408,12 +405,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[STATE_KEY] = STATE_AWAITING_CHOICE
             await update.message.reply_text("Understood. Would you like to explore **Wellness** resources, or connect with the **Clinic**?")
     else:
-        # Fallback to start if state is unknown
         await start(update, context)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log the error."""
-    logger.error("Exception while handling an update:", exc_info=context.error)
+    logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
 
 async def post_init(application: Application):
     """Clear any existing webhooks at startup."""
@@ -425,12 +421,23 @@ def main() -> None:
     logger.info("--- Indra Clinic Bot Initializing ---")
     
     try:
-        app = (Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build())
+        # --- CHANGE: Correct way to register the error handler is in the builder ---
+        app = (
+            Application.builder()
+            .token(TELEGRAM_TOKEN)
+            .post_init(post_init)
+            .build()
+        )
+
+        app.add_error_handler(error_handler)
+        
+        # Add handlers
         app.add_handler(CommandHandler("start", start))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        app.add_handler(error_handler)
+        
         logger.info("Bot is configured. Starting polling...")
         app.run_polling(poll_interval=1, drop_pending_updates=True)
+
     except Exception as e:
         logger.critical(f"FATAL ERROR during bot setup: {e}", exc_info=True)
         sys.exit(1)
