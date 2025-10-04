@@ -270,7 +270,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(2.5); await update.message.reply_text("When you're ready for a short story, reply 'ok'.")
         elif '2' in choice or 'sleep' in choice:
             context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_2_TEACHING
-            await update.message.reply_text("Day 2 – Sleep: Rest and Renewal\n\nSleep is nature’s healer. Shakespeare called it: “The balm of hurt minds, great nature’s second course, chief nourisher in life’s feast.” Yet, 71% of of people in the UK don’t get enough.")
+            await update.message.reply_text("Day 2 – Sleep: Rest and Renewal\n\nSleep is nature’s healer. Shakespeare called it: “The balm of hurt minds, great nature’s second course, chief nourisher in life’s feast.” Yet, 71% of people in the UK don’t get enough.")
             await asyncio.sleep(2.5); await update.message.reply_text("Reply 'ok' to continue.")
         elif '3' in choice or 'movement' in choice:
             context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_3_TEACHING
@@ -328,8 +328,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(2); await update.message.reply_text("💡 Closing:\n“Every breath is a reminder to your body: you are safe.”")
         await wellness_day_end_message(update, context)
     
-    # ... (Full scripted logic for all other 6 days and the Struggles Menu) ...
-    
     # --- AI-DRIVEN STRUGGLES FLOW ---
     elif current_state == STATE_WELLNESS_STRUGGLES_CHAT_ACTIVE:
         history = context.user_data.get(HISTORY_KEY, [])
@@ -356,14 +354,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(ai_response_text)
             await asyncio.sleep(1.5)
             await update.message.reply_text("I hope that clarifies things. To continue, please type **'I agree'**.")
-
     elif current_state == STATE_AWAITING_EMAIL:
         if '@' in user_message and '.' in user_message:
             context.user_data[EMAIL_KEY] = user_message
             context.user_data[STATE_KEY] = STATE_AWAITING_DOB
             await update.message.reply_text("Thank you. Please also provide your **Date of Birth** (DD/MM/YYYY).")
         else: await update.message.reply_text("That doesn't look like a valid email. Please try again.")
-
     elif current_state == STATE_AWAITING_DOB:
         if len(user_message) >= 8:
             context.user_data[DOB_KEY] = user_message
@@ -371,7 +367,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[HISTORY_KEY] = []
             await update.message.reply_text(f"Thank you. Details noted.\n\nPlease select a category:\n1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**")
         else: await update.message.reply_text("That date doesn't look right. Please use the DD/MM/YYYY format.")
-
     elif current_state == STATE_AWAITING_CATEGORY:
         cleaned_message = user_message.lower()
         if any(word in cleaned_message for word in ['1', 'admin']):
