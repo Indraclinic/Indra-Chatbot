@@ -39,6 +39,9 @@ EMAIL_KEY = 'patient_email'
 SESSION_ID_KEY = 'session_id'
 CURRENT_APPT_KEY = 'current_appointment'
 TRANSCRIPT_KEY = 'full_transcript'
+# --- NEW KEYS FOR DYNAMIC MODULES ---
+MODULE_KEY = 'current_module'
+MODULE_STEP_KEY = 'current_module_step'
 
 # --- CONVERSATION STATES ---
 STATE_AWAITING_CHOICE = 'awaiting_choice'
@@ -61,24 +64,32 @@ STATE_WELLNESS_DAY_1_INQUIRY = 'wellness_day_1_inquiry'
 STATE_WELLNESS_DAY_1_PRACTICE = 'wellness_day_1_practice'
 STATE_WELLNESS_DAY_1_FEEDBACK = 'wellness_day_1_feedback'
 STATE_WELLNESS_DAY_1_ALT = 'wellness_day_1_alt'
+STATE_WELLNESS_DAY_2_TEACHING = 'wellness_day_2_teaching'
 STATE_WELLNESS_DAY_2_INQUIRY = 'wellness_day_2_inquiry'
 STATE_WELLNESS_DAY_2_PRACTICE = 'wellness_day_2_practice'
+STATE_WELLNESS_DAY_3_TEACHING = 'wellness_day_3_teaching'
 STATE_WELLNESS_DAY_3_INQUIRY = 'wellness_day_3_inquiry'
 STATE_WELLNESS_DAY_3_PRACTICE = 'wellness_day_3_practice'
 STATE_WELLNESS_DAY_4_STORY = 'wellness_day_4_story'
 STATE_WELLNESS_DAY_4_TEACHING = 'wellness_day_4_teaching'
+STATE_WELLNESS_DAY_4_INQUIRY = 'wellness_day_4_inquiry'
 STATE_WELLNESS_DAY_4_PRACTICE = 'wellness_day_4_practice'
 STATE_WELLNESS_DAY_5_TEACHING = 'wellness_day_5_teaching'
+STATE_WELLNESS_DAY_5_INQUIRY = 'wellness_day_5_inquiry'
 STATE_WELLNESS_DAY_5_PRACTICE = 'wellness_day_5_practice'
 STATE_WELLNESS_DAY_6_TEACHING = 'wellness_day_6_teaching'
+STATE_WELLNESS_DAY_6_INQUIRY = 'wellness_day_6_inquiry'
 STATE_WELLNESS_DAY_6_PRACTICE = 'wellness_day_6_practice'
 STATE_WELLNESS_DAY_7_TEACHING = 'wellness_day_7_teaching'
+STATE_WELLNESS_DAY_7_INQUIRY = 'wellness_day_7_inquiry'
 STATE_WELLNESS_DAY_7_PRACTICE = 'wellness_day_7_practice'
 STATE_WELLNESS_STRUGGLES_CHAT_ACTIVE = 'wellness_struggles_chat_active'
 STATE_WELLNESS_STRUGGLES_ANXIETY = 'wellness_struggles_anxiety'
 STATE_WELLNESS_STRUGGLES_OVERWHELM = 'wellness_struggles_overwhelm'
 STATE_WELLNESS_STRUGGLES_ENERGY = 'wellness_struggles_energy'
 STATE_WELLNESS_STRUGGLES_ELSE = 'wellness_struggles_else'
+# --- NEW GENERIC STATE FOR ALL DYNAMIC MODULES ---
+STATE_WELLNESS_DYNAMIC_MODULE = 'wellness_dynamic_module'
 
 
 def load_system_prompt():
@@ -90,8 +101,33 @@ def load_system_prompt():
         logger.critical("--- FATAL ERROR: system_prompt.txt not found! ---")
         return "You are a helpful clinic assistant."
 
+def load_wellness_modules():
+    """Scans the 'wellness_modules' directory for JSON files and loads them."""
+    modules = {}
+    module_dir = 'wellness_modules'
+    if not os.path.exists(module_dir):
+        logger.warning(f"'{module_dir}' directory not found. No dynamic modules will be loaded.")
+        return modules
+    
+    for filename in os.listdir(module_dir):
+        if filename.endswith('.json'):
+            try:
+                with open(os.path.join(module_dir, filename), 'r', encoding='utf-8') as f:
+                    module_data = json.load(f)
+                    # --- MORE ROBUST VALIDATION FOR DYNAMIC ENGINE ---
+                    if all(k in module_data for k in ['keyword', 'title', 'start_step', 'steps']):
+                        modules[module_data['keyword']] = module_data
+                        logger.info(f"Successfully loaded dynamic module: {module_data['title']}")
+                    else:
+                        logger.warning(f"Skipping invalid module file {filename}: missing required keys.")
+            except Exception as e:
+                logger.error(f"Error loading module from {filename}: {e}")
+    return modules
+
+WELLNESS_MODULES = load_wellness_modules()
 SYSTEM_PROMPT = load_system_prompt()
 
+# ... (All functions like push_to_semble, send_initial_emails, etc. remain exactly the same) ...
 async def push_to_semble(patient_email: str, category: str, summary: str, transcript: str):
     if not SEMBLE_API_KEY: raise ValueError("Semble API Key is not configured.")
     SEMBLE_GRAPHQL_URL = "https://open.semble.io/graphql"
@@ -207,7 +243,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def wellness_day_end_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await asyncio.sleep(2)
     context.user_data[STATE_KEY] = STATE_WELLNESS_MAIN_MENU
-    await update.message.reply_text("Would you like to explore another part of the **7-day journey**, or tell me what you’re **struggling** with?")
+    
+    menu_text = "You can:\n👉 Explore the **7-day journey**\n👉 Tell me what you’re **struggling** with today"
+    if WELLNESS_MODULES:
+        for module in WELLNESS_MODULES.values():
+            menu_text += f"\n👉 Explore **{module['title']}**"
+    await update.message.reply_text("Would you like to explore another topic?")
+    await asyncio.sleep(1)
+    await update.message.reply_text(menu_text)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
@@ -218,6 +261,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- MAIN BRANCH ---
     if current_state == STATE_AWAITING_CHOICE:
         if 'clinic' in choice:
+            # ... (Clinic flow remains identical)
             context.user_data[SESSION_ID_KEY] = str(uuid.uuid4())
             context.user_data[STATE_KEY] = STATE_AWAITING_CONSENT
             await update.message.reply_text("This service is in beta. If you prefer, email us at drT@indra.clinic.")
@@ -248,12 +292,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(2.5)
             await update.message.reply_text("Sheila has spent over 30 years working in palliative medicine, supporting people at the hardest times of their lives. What she discovered is that the same practices that help people in crisis can also help us all live healthier, happier, wiser lives — whatever our circumstances.")
             await asyncio.sleep(2.5)
-            await update.message.reply_text("You can:\n👉 Explore the **7-day journey**\n👉 Or tell me what you’re **struggling** with today")
+            
+            menu_text = "You can:\n👉 Explore the **7-day journey**\n👉 Tell me what you’re **struggling** with today"
+            if WELLNESS_MODULES:
+                for module in WELLNESS_MODULES.values():
+                    menu_text += f"\n👉 Explore **{module['title']}**"
+            await update.message.reply_text(menu_text)
         else:
             await update.message.reply_text("I'm sorry, I didn't understand. Please choose either **Wellness** or **Clinic**.")
 
     # --- SCRIPTED & HYBRID WELLNESS FLOW ---
     elif current_state == STATE_WELLNESS_MAIN_MENU:
+        # Check if the user's choice matches a dynamic module keyword
+        chosen_module_keyword = next((keyword for keyword in WELLNESS_MODULES.keys() if keyword in choice), None)
+
         if 'journey' in choice or '7' in choice:
             context.user_data[STATE_KEY] = STATE_WELLNESS_JOURNEY_MENU
             await update.message.reply_text("Which day would you like to explore?\n\n1. Day 1 – Stress\n2. Day 2 – Sleep\n3. Day 3 – Movement\n4. Day 4 – Nutrition\n5. Day 5 – Attitude\n6. Day 6 – Happiness\n7. Day 7 – Habits")
@@ -266,9 +318,72 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ai_response_text, _, _, _ = await query_openrouter(context.user_data.get(HISTORY_KEY, []))
             context.user_data[HISTORY_KEY].append({"role": "indie", "text": ai_response_text})
             await update.message.reply_text(ai_response_text)
+        elif chosen_module_keyword:
+            module = WELLNESS_MODULES[chosen_module_keyword]
+            start_step_id = module['start_step']
+            start_step_data = module['steps'].get(start_step_id)
+
+            if start_step_data:
+                context.user_data[STATE_KEY] = STATE_WELLNESS_DYNAMIC_MODULE
+                context.user_data[MODULE_KEY] = chosen_module_keyword
+                context.user_data[MODULE_STEP_KEY] = start_step_id
+                await update.message.reply_text(start_step_data['text'])
+            else:
+                await update.message.reply_text("Sorry, there was an error starting this module.")
         else:
-            await update.message.reply_text("I didn't understand. Please choose **7-day journey** or **struggling**.")
-            
+            await update.message.reply_text("I didn't understand. Please choose one of the available options.")
+    
+    # --- NEW: DYNAMIC MODULE ENGINE ---
+    elif current_state == STATE_WELLNESS_DYNAMIC_MODULE:
+        module_keyword = context.user_data.get(MODULE_KEY)
+        current_step_id = context.user_data.get(MODULE_STEP_KEY)
+        
+        if not module_keyword or not current_step_id:
+            await update.message.reply_text("Sorry, an error occurred. Let's return to the menu.")
+            await wellness_day_end_message(update, context)
+            return
+
+        module = WELLNESS_MODULES[module_keyword]
+        current_step_data = module['steps'].get(current_step_id, {})
+        
+        # Determine the next step based on user input
+        next_step_id = None
+        # First, check for specific keyword transitions
+        for transition in current_step_data.get('transitions', []):
+            if transition['keyword'] != 'default' and transition['keyword'] in choice:
+                next_step_id = transition['next_step']
+                break
+        
+        # If no specific keyword matched, look for a default transition
+        if not next_step_id:
+            for transition in current_step_data.get('transitions', []):
+                if transition['keyword'] == 'default':
+                    next_step_id = transition['next_step']
+                    break
+        
+        if not next_step_id:
+            # If no transition is found, repeat the current step's prompt or end
+            await update.message.reply_text(f"I didn't quite catch that. {current_step_data.get('text', 'Please try again.')}")
+            return
+
+        next_step_data = module['steps'].get(next_step_id)
+
+        if not next_step_data:
+            await update.message.reply_text("Sorry, an error occurred in the module flow. Returning to the menu.")
+            await wellness_day_end_message(update, context)
+            return
+        
+        # Send the text for the next step
+        await update.message.reply_text(next_step_data['text'])
+        
+        # Check if the module has ended
+        if next_step_data.get('type') == 'end':
+            await wellness_day_end_message(update, context)
+        else:
+            # Otherwise, update the state to the next step
+            context.user_data[MODULE_STEP_KEY] = next_step_id
+
+    # --- ALL OTHER FLOWS (7-DAY JOURNEY, CLINIC) REMAIN IDENTICAL ---
     # --- FULLY SCRIPTED 7-DAY JOURNEY ---
     elif current_state == STATE_WELLNESS_JOURNEY_MENU:
         if '1' in choice or 'stress' in choice:
@@ -302,6 +417,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("Please select a day from 1 to 7.")
 
+    # ... (Rest of the 7-day journey and clinic flow code is identical to the previous version) ...
     # Day 1 Flow
     elif current_state == STATE_WELLNESS_DAY_1_STORY:
         context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_1_TEACHING
@@ -334,13 +450,94 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Alternative: Elephant & Hippo Breathing\n\n“Sarah, a patient with severe anxiety, couldn’t manage counting. So she used words... Inhale saying: El-e-phant (3 syllables). Hold briefly. Exhale saying: Hip-po-pot-a-mus (5 syllables)“\n\nHer oxygen levels rose, her pulse slowed, and her anxiety eased. Words, not numbers, brought her calm.")
         await asyncio.sleep(2); await update.message.reply_text("💡 Closing:\n“Every breath is a reminder to your body: you are safe.”")
         await wellness_day_end_message(update, context)
-    
+    # Day 2 Flow
+    elif current_state == STATE_WELLNESS_DAY_2_TEACHING:
+        context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_2_INQUIRY
+        await update.message.reply_text("Teaching\n\nSleep repairs your immune system, clears toxins from your brain, and resets your mood. The biggest thief? A racing mind. Consistency is key — your body clock loves rhythm.")
+        await asyncio.sleep(2.5); await update.message.reply_text("When you lie awake, what keeps you up most?\n1. Racing thoughts\n2. Heavy feelings\n3. Both\n4. Not sure")
+    elif current_state == STATE_WELLNESS_DAY_2_INQUIRY:
+        context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_2_PRACTICE
+        if '1' in choice or 'racing' in choice:
+            await update.message.reply_text("That's very common. A great tip is to try journaling tomorrow’s worries before bed, to get them out of your head.")
+        elif '2' in choice or 'heavy' in choice:
+            await update.message.reply_text("Noticing where heavy feelings sit in your body and placing a hand there while breathing slowly can be very soothing.")
+        elif '3' in choice or 'both' in choice:
+            await update.message.reply_text("That’s very common. Let’s look at some gentle practices that can help with both.")
+        await asyncio.sleep(2.5); await update.message.reply_text("Reply 'ok' for some practical tips for tonight.")
+    elif current_state == STATE_WELLNESS_DAY_2_PRACTICE:
+        await update.message.reply_text("Practices for tonight:\n\n• Keep consistent sleep/wake times (even weekends).\n• Switch off screens 1 hour before bed (“digital sunset”).\n• If awake >20 mins, get up and do something calming.\n• Avoid caffeine, alcohol, or heavy meals close to bedtime.")
+        await asyncio.sleep(2); await update.message.reply_text("💡 Closing:\n“Do what you can, then release the rest. Sleep will come when it’s ready.”")
+        await wellness_day_end_message(update, context)
+    # Day 3 Flow
+    elif current_state == STATE_WELLNESS_DAY_3_TEACHING:
+        context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_3_INQUIRY
+        await update.message.reply_text("Teaching\n\nMovement doesn’t need gyms or Lycra. It can be joyful — dancing, walking while on a call, stretching while the kettle boils. Think of them as 'movement snacks'.")
+        await asyncio.sleep(2.5); await update.message.reply_text("When you’re stressed, how does your body typically respond? (e.g., Freeze, Pace, Collapse). Just notice this for yourself, then reply 'ok' to try a practice.")
+    elif current_state == STATE_WELLNESS_DAY_3_INQUIRY:
+        context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_3_PRACTICE
+        await update.message.reply_text("Practice\n\nTry this now: Stand up, stretch your arms overhead. Roll your shoulders back. Take 3 deep breaths. Walk to a window or just around the room.")
+        await asyncio.sleep(2.5); await update.message.reply_text("When you're done, reply 'ok'.")
+    elif current_state == STATE_WELLNESS_DAY_3_PRACTICE:
+        await update.message.reply_text("💡 Closing:\n“Scatter movement through your day — your body will thank you.”")
+        await wellness_day_end_message(update, context)
+    # Day 4 Flow
+    elif current_state == STATE_WELLNESS_DAY_4_STORY:
+        context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_4_TEACHING
+        await update.message.reply_text("Story\n\nIn Blue Zones (like Okinawa, Sardinia, and Ikaria), people live the longest and healthiest lives. Their secret? Colourful, plant-based diets — eaten socially, slowly, and seasonally.")
+        await asyncio.sleep(2.5); await update.message.reply_text("Reply 'ok' to continue.")
+    elif current_state == STATE_WELLNESS_DAY_4_TEACHING:
+        context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_4_INQUIRY
+        await update.message.reply_text("Teaching\n\nA simple rule: Eat the rainbow 🌈. Each colour represents different nutrients. The more colours on your plate, the healthier your gut and your mind.")
+        await asyncio.sleep(2.5); await update.message.reply_text("When you reach for food, is it usually for hunger, stress, comfort, or habit? Just notice this for yourself, then reply 'ok' for a simple practice.")
+    elif current_state == STATE_WELLNESS_DAY_4_INQUIRY:
+        context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_4_PRACTICE
+        await update.message.reply_text("Practice\n\nWhat colours have you eaten today? (Red, green, yellow, purple, orange?)")
+        await asyncio.sleep(2.5); await update.message.reply_text("Now think: What one colour could you add at your next meal?")
+    elif current_state == STATE_WELLNESS_DAY_4_PRACTICE:
+        await update.message.reply_text("💡 Closing:\n“Food is information for your body — make it colourful, varied, and joyful.”")
+        await wellness_day_end_message(update, context)
+    # Day 5 Flow
+    elif current_state == STATE_WELLNESS_DAY_5_TEACHING:
+        context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_5_INQUIRY
+        await update.message.reply_text("Teaching\n\nHumans have a negativity bias — we've evolved to scan for danger. This is why we often replay harsh words and overlook kindness. But the good news is that attitude is trainable. Acts of gratitude and kindness can reshape the brain.")
+        await asyncio.sleep(2.5); await update.message.reply_text("Reply 'ok' for a check-in.")
+    elif current_state == STATE_WELLNESS_DAY_5_INQUIRY:
+        context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_5_PRACTICE
+        await update.message.reply_text("Inquiry\n\nWhen life feels heavy, which inner voice is loudest? (e.g., ‘I’m not enough’, ‘I must keep going’, ‘I don’t deserve rest’). Just notice this for yourself, then reply 'ok' for today's practice.")
+    elif current_state == STATE_WELLNESS_DAY_5_PRACTICE:
+        await update.message.reply_text("Practices\n\n• Do one small act of kindness today (a thank-you text, a smile, a call).\n• Tonight, before sleep, write down 3 things you’re grateful for.")
+        await asyncio.sleep(2); await update.message.reply_text("💡 Closing:\n“Kindness is contagious. By giving it, you receive it too.”")
+        await wellness_day_end_message(update, context)
+    # Day 6 Flow
+    elif current_state == STATE_WELLNESS_DAY_6_TEACHING:
+        context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_6_INQUIRY
+        await update.message.reply_text("Teaching\n\nHappiness doesn’t live in possessions. It fades quickly from “stuff” but it lasts in connection, nature, and savouring the small moments. Happiness isn’t about being happy all the time, but you can raise your baseline.")
+        await asyncio.sleep(2.5); await update.message.reply_text("Reply 'ok' for a check-in.")
+    elif current_state == STATE_WELLNESS_DAY_6_INQUIRY:
+        context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_6_PRACTICE
+        await update.message.reply_text("Inquiry\n\nWhen was the last time you felt truly alive? Take a moment to remember it. Then reply 'ok' for a practice.")
+    elif current_state == STATE_WELLNESS_DAY_6_PRACTICE:
+        await update.message.reply_text("Practice\n\nChoose one simple thing to savour today: a meal, a walk, a piece of music. Pause and notice every detail. Tonight, try to relive the feeling.")
+        await asyncio.sleep(2); await update.message.reply_text("💡 Closing:\n“Happiness is not about chasing more — but noticing more.”")
+        await wellness_day_end_message(update, context)
+    # Day 7 Flow
+    elif current_state == STATE_WELLNESS_DAY_7_TEACHING:
+        context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_7_INQUIRY
+        await update.message.reply_text("Teaching\n\nBad habits stick because they are easy and give an immediate reward. Good habits last when they are small, specific, and tied to your identity. James Clear says: “Every action is a vote for the kind of person you want to become.”")
+        await asyncio.sleep(2.5); await update.message.reply_text("Reply 'ok' for a check-in.")
+    elif current_state == STATE_WELLNESS_DAY_7_INQUIRY:
+        context.user_data[STATE_KEY] = STATE_WELLNESS_DAY_7_PRACTICE
+        await update.message.reply_text("Inquiry\n\nThink of a habit you'd like to change. Ask yourself: What does this habit give me in the moment? What pain might it be protecting me from? Just reflect on this, then reply 'ok' for a final practice.")
+    elif current_state == STATE_WELLNESS_DAY_7_PRACTICE:
+        await update.message.reply_text("Practice\n\nAsk yourself these three questions:\n1. Who am I right now?\n2. Who do I want to become?\n3. What one small habit could move me closer?")
+        await asyncio.sleep(2); await update.message.reply_text("💡 Closing:\n“Start small. Consistency matters more than willpower.”")
+        await wellness_day_end_message(update, context)
     # --- AI-DRIVEN STRUGGLES FLOW ---
     elif current_state == STATE_WELLNESS_STRUGGLES_CHAT_ACTIVE:
         history = context.user_data.get(HISTORY_KEY, [])
         history.append({"role": "user", "text": user_message})
         await update.message.chat.send_action("typing")
-        ai_response_text, _, action, summary = await query_openrouter(history)
+        ai_response_text, _, summary, action = await query_openrouter(history)
         history.append({"role": "indie", "text": ai_response_text})
         context.user_data[HISTORY_KEY] = history
         await update.message.reply_text(ai_response_text)
@@ -348,7 +545,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Wellness Red Flag detected. Summary: {summary}")
             await update.message.reply_text("If you need to speak with the clinic or explore wellness again, please restart by typing /start.")
             context.user_data.clear()
-
     # --- FULLY-FUNCTIONAL CLINIC WORKFLOW ---
     elif current_state == STATE_AWAITING_CONSENT:
         if user_message.lower() == 'i agree':
@@ -388,7 +584,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[HISTORY_KEY].append({"role": "user", "text": "Category: Clinical/Medical."})
             await update.message.reply_text("Thank you. Please describe the clinical issue.")
         else: await update.message.reply_text("I don't understand. Please reply with a number (1-3).")
-    
     elif current_state == STATE_ADMIN_SUB_CATEGORY:
         cleaned_message = user_message.lower()
         if 'appointment' in cleaned_message:
@@ -400,12 +595,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Thank you. Please describe your administrative request.")
         else:
             await update.message.reply_text("I didn't understand. Please reply with 'Appointments' or 'Something else'.")
-
     elif current_state == STATE_ADMIN_AWAITING_CURRENT_APPT:
         context.user_data[CURRENT_APPT_KEY] = user_message
         context.user_data[STATE_KEY] = STATE_ADMIN_AWAITING_NEW_APPT
         await update.message.reply_text("Thank you. And what is the **new** date and time you would like?")
-
     elif current_state == STATE_ADMIN_AWAITING_NEW_APPT:
         current_appt = context.user_data.get(CURRENT_APPT_KEY, 'Not provided')
         new_appt = user_message
@@ -414,7 +607,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data[STATE_KEY] = STATE_AWAITING_CONFIRMATION
         context.user_data[HISTORY_KEY] = []
         await update.message.reply_text(f"---\n**Query Summary**\n---\nPlease review:\n\n**Summary:** *{summary}*\n\nIs this correct? (Yes/No)")
-
     elif current_state == STATE_CHAT_ACTIVE:
         history = context.user_data.get(HISTORY_KEY, [])
         history.append({"role": "user", "text": user_message})
@@ -427,7 +619,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[TEMP_REPORT_KEY] = {'category': category, 'summary': summary}
             context.user_data[STATE_KEY] = STATE_AWAITING_CONFIRMATION
             await update.message.reply_text(f"---\n**Query Summary**\n---\nPlease review:\n\n**Summary:** *{summary}*\n\nIs this correct? (Yes/No)")
-
     elif current_state == STATE_AWAITING_CONFIRMATION:
         confirmation = user_message.lower()
         if confirmation in ['yes', 'y', 'correct', 'confirm']:
@@ -455,8 +646,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.critical(f"CRITICAL ERROR during report dispatch: {e}", exc_info=True)
                 await update.message.reply_text("A critical error occurred while finalising your report.")
-                context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
-        
+                context.user_data.clear()
+                await asyncio.sleep(2)
+                await start(update, context)
         elif confirmation in ['no', 'n', 'incorrect']:
             if not context.user_data.get(HISTORY_KEY):
                  context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
@@ -466,7 +658,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Understood. Please provide corrections.")
         else:
             await update.message.reply_text("I didn't understand. Please confirm with 'Yes' or 'No'.")
-            
     elif current_state == STATE_AWAITING_TRANSCRIPT_CHOICE:
         choice = user_message.lower()
         if choice in ['yes', 'y']:
@@ -485,7 +676,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         context.user_data[STATE_KEY] = STATE_AWAITING_NEW_QUERY
         await update.message.reply_text("Is there anything else I can help with?")
-
     elif current_state == STATE_AWAITING_NEW_QUERY:
         cleaned_message = user_message.lower()
         if any(word in cleaned_message for word in ['no', 'nope', 'bye', 'end', 'thanks']):
@@ -496,6 +686,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Understood. Would you like to explore **Wellness** resources, or connect with the **Clinic**?")
     else:
         await start(update, context)
+
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
