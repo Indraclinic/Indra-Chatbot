@@ -61,9 +61,9 @@ STATE_WELLNESS_DAY_1_INQUIRY = 'wellness_day_1_inquiry'
 STATE_WELLNESS_DAY_1_PRACTICE = 'wellness_day_1_practice'
 STATE_WELLNESS_DAY_1_FEEDBACK = 'wellness_day_1_feedback'
 STATE_WELLNESS_DAY_1_ALT = 'wellness_day_1_alt'
-STATE_WELLNESS_DAY_2_TEACHING = 'wellness_day_2_teaching'
+STATE_WELLNESS_DAY_2_INQUIRY = 'wellness_day_2_inquiry'
 STATE_WELLNESS_DAY_2_PRACTICE = 'wellness_day_2_practice'
-STATE_WELLNESS_DAY_3_TEACHING = 'wellness_day_3_teaching'
+STATE_WELLNESS_DAY_3_INQUIRY = 'wellness_day_3_inquiry'
 STATE_WELLNESS_DAY_3_PRACTICE = 'wellness_day_3_practice'
 STATE_WELLNESS_DAY_4_STORY = 'wellness_day_4_story'
 STATE_WELLNESS_DAY_4_TEACHING = 'wellness_day_4_teaching'
@@ -75,6 +75,11 @@ STATE_WELLNESS_DAY_6_PRACTICE = 'wellness_day_6_practice'
 STATE_WELLNESS_DAY_7_TEACHING = 'wellness_day_7_teaching'
 STATE_WELLNESS_DAY_7_PRACTICE = 'wellness_day_7_practice'
 STATE_WELLNESS_STRUGGLES_CHAT_ACTIVE = 'wellness_struggles_chat_active'
+STATE_WELLNESS_STRUGGLES_ANXIETY = 'wellness_struggles_anxiety'
+STATE_WELLNESS_STRUGGLES_OVERWHELM = 'wellness_struggles_overwhelm'
+STATE_WELLNESS_STRUGGLES_ENERGY = 'wellness_struggles_energy'
+STATE_WELLNESS_STRUGGLES_ELSE = 'wellness_struggles_else'
+
 
 def load_system_prompt():
     """Loads the system prompt from an external file."""
@@ -210,6 +215,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text.strip()
     choice = user_message.lower()
     
+    # --- MAIN BRANCH ---
     if current_state == STATE_AWAITING_CHOICE:
         if 'clinic' in choice:
             context.user_data[SESSION_ID_KEY] = str(uuid.uuid4())
@@ -246,6 +252,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("I'm sorry, I didn't understand. Please choose either **Wellness** or **Clinic**.")
 
+    # --- SCRIPTED & HYBRID WELLNESS FLOW ---
     elif current_state == STATE_WELLNESS_MAIN_MENU:
         if 'journey' in choice or '7' in choice:
             context.user_data[STATE_KEY] = STATE_WELLNESS_JOURNEY_MENU
