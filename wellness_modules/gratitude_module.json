@@ -1,0 +1,30 @@
+{
+  "title": "Gratitude Practice",
+  "keyword": "gratitude",
+  "start_step": "intro",
+  "steps": {
+    "intro": {
+      "text": "Welcome to a short Gratitude Practice. This can help shift focus to the positive aspects of your day. Are you ready to begin? (yes/no)",
+      "type": "prompt",
+      "transitions": [
+        { "keyword": "yes", "next_step": "practice_1" },
+        { "keyword": "no", "next_step": "end_early" }
+      ]
+    },
+    "practice_1": {
+      "text": "Great. Please take a moment to think of one specific thing that happened today, no matter how small, that you are grateful for. When you are ready, reply 'ok' or 'next'.",
+      "type": "info",
+      "transitions": [
+        { "keyword": "default", "next_step": "closing" }
+      ]
+    },
+    "closing": {
+      "text": "Wonderful. Holding onto that feeling of gratitude, even for a moment, can make a real difference. Thank you for taking this time for yourself.",
+      "type": "end"
+    },
+    "end_early": {
+      "text": "That's perfectly okay. Perhaps another time. You can choose another option from the menu when you're ready.",
+      "type": "end"
+    }
+  }
+}
