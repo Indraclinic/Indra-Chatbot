@@ -203,23 +203,46 @@ def send_transcript_email(patient_email: str, summary: str, transcript: str):
         logger.info(f"Patient transcript successfully emailed to {patient_email}")
 
 async def query_openrouter(history: list) -> tuple[str, str, str, str]:
+    """Queries OpenRouter and handles potential JSON decoding errors."""
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for turn in history:
         role = 'assistant' if turn['role'] == 'indie' else 'user'
         messages.append({"role": role, "content": turn['text']})
+    
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
     data = {"model": "openai/gpt-4o-mini", "messages": messages, "response_format": {"type": "json_object"}}
     
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=20)
+            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=30)
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
-            return (parsed.get('response', "I'm having trouble."), parsed.get('category', 'Admin'), parsed.get('summary', 'No summary.'), parsed.get('action', 'CONTINUE').upper())
+            
+            # --- START OF THE FIX ---
+            # Try to parse the JSON, but handle errors gracefully if the AI response is not valid JSON
+            try:
+                parsed = json.loads(content)
+                return (
+                    parsed.get('response', "I'm having a little trouble thinking. Could you please rephrase?"),
+                    parsed.get('category', 'Admin'),
+                    parsed.get('summary', 'No summary due to response error.'),
+                    parsed.get('action', 'CONTINUE').upper()
+                )
+            except json.JSONDecodeError:
+                logger.error(f"JSONDecodeError: Failed to parse AI response. Content was: {content}")
+                # Provide a safe fallback response to the user
+                return "I'm sorry, I seem to be having a technical issue. Could you try asking that again in a different way?", "Admin", "AI response was not valid JSON.", "CONTINUE"
+            # --- END OF THE FIX ---
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTPStatusError in query_openrouter: {e.response.status_code} - {e.response.text}")
+            return "A technical issue occurred while connecting to the AI service.", "Admin", "HTTP Error", "CONTINUE"
         except Exception as e:
-            logger.error(f"An error occurred in query_openrouter: {e}", exc_info=True)
-            return "A technical issue occurred.", "Admin", "Unhandled error", "CONTINUE"
+            logger.error(f"An unexpected error occurred in query_openrouter: {e}", exc_info=True)
+            return "An unexpected technical issue occurred.", "Admin", "Unhandled error", "CONTINUE"
+
+# ...
+# (The rest of your main.py file remains the same)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
