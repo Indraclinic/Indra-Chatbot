@@ -34,7 +34,7 @@ if not TELEGRAM_TOKEN or not OPENROUTER_API_KEY:
 STATE_KEY = 'conversation_state'
 HISTORY_KEY = 'chat_history'
 TEMP_REPORT_KEY = 'temp_report'
-DOB_KEY = 'date_of_birth'
+PATIENT_ID_KEY = 'patient_id' # --- MODIFIED --- (Replaced DOB_KEY)
 EMAIL_KEY = 'patient_email'
 SESSION_ID_KEY = 'session_id'
 CURRENT_APPT_KEY = 'current_appointment'
@@ -46,7 +46,7 @@ MODULE_STEP_KEY = 'current_module_step'
 STATE_AWAITING_CHOICE = 'awaiting_choice'
 STATE_AWAITING_CONSENT = 'awaiting_consent'
 STATE_AWAITING_EMAIL = 'awaiting_email'
-STATE_AWAITING_DOB = 'awaiting_dob'
+STATE_AWAITING_PATIENT_ID = 'awaiting_patient_id' # --- MODIFIED --- (Replaced STATE_AWAITING_DOB)
 STATE_AWAITING_CATEGORY = 'awaiting_category'
 STATE_CHAT_ACTIVE = 'chat_active'
 STATE_AWAITING_CONFIRMATION = 'awaiting_confirmation'
@@ -147,7 +147,7 @@ async def push_to_semble(patient_email: str, category: str, summary: str, transc
              raise Exception(f"GraphQL error during record creation: {record_data}")
         logger.info(f"Successfully pushed FreeTextRecord to Semble for Patient ID: {semble_patient_id}")
 
-def send_initial_emails_and_generate_transcripts(dob: str, patient_email: str, session_id: str, history: list, category: str, summary: str):
+def send_initial_emails_and_generate_transcripts(patient_id: str, patient_email: str, session_id: str, history: list, category: str, summary: str):
     transcript_for_email = f"Full Conversation Transcript (Session: {session_id})\n\n"
     transcript_for_semble = f"Full Conversation Transcript (Session: {session_id})<br><br>"
     if not history:
@@ -166,7 +166,7 @@ def send_initial_emails_and_generate_transcripts(dob: str, patient_email: str, s
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
         server.starttls()
         server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        admin_subject = f"[Indie Bot] {category} Query from: {patient_email} (DOB: {dob})"
+        admin_subject = f"[Indie Bot] {category} Query from: {patient_email} (Patient ID: {patient_id})"
         admin_msg = EmailMessage()
         admin_msg['Subject'] = admin_subject
         admin_msg['From'] = SENDER_EMAIL
@@ -559,16 +559,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif current_state == STATE_AWAITING_EMAIL:
         if '@' in user_message and '.' in user_message:
             context.user_data[EMAIL_KEY] = user_message
-            context.user_data[STATE_KEY] = STATE_AWAITING_DOB
-            await update.message.reply_text("Thank you. Please also provide your **Date of Birth** (DD/MM/YYYY).")
+            context.user_data[STATE_KEY] = STATE_AWAITING_PATIENT_ID
+            await update.message.reply_text("Thank you. Please also provide your **Patient ID**.")
         else: await update.message.reply_text("That doesn't look like a valid email. Please try again.")
-    elif current_state == STATE_AWAITING_DOB:
+    elif current_state == STATE_AWAITING_PATIENT_ID:
         if len(user_message) >= 8:
-            context.user_data[DOB_KEY] = user_message
+            context.user_data[PATIENT_ID_KEY] = user_message
             context.user_data[STATE_KEY] = STATE_AWAITING_CATEGORY
             context.user_data[HISTORY_KEY] = []
             await update.message.reply_text(f"Thank you. Details noted.\n\nPlease select a category:\n1. **Administrative**\n2. **Prescription/Medication**\n3. **Clinical/Medical**")
-        else: await update.message.reply_text("That date doesn't look right. Please use the DD/MM/YYYY format.")
+        else: await update.message.reply_text("That Patient ID does not look right. Please try again.")
     elif current_state == STATE_AWAITING_CATEGORY:
         cleaned_message = user_message.lower()
         if any(word in cleaned_message for word in ['1', 'admin']):
@@ -626,7 +626,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Finalising your request, please wait...")
                 transcript_for_semble, transcript_for_email = await asyncio.to_thread(
                     send_initial_emails_and_generate_transcripts,
-                    context.user_data.get(DOB_KEY),
+                    context.user_data.get(PATIENT_ID_KEY),
                     context.user_data.get(EMAIL_KEY),
                     context.user_data.get(SESSION_ID_KEY),
                     context.user_data.get(HISTORY_KEY, []),
